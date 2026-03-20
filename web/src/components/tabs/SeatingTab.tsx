@@ -143,8 +143,22 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   const [assignSearch, setAssignSearch] = useState('');
 
   // SVG pan/zoom
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 40, y: 60 });
+  const zoomRef = useRef(1);
+  const [zoom, _setZoom] = useState(1);
+  const setZoom = useCallback((v: number | ((z: number) => number)) => {
+    _setZoom((prev) => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(next * 100) / 100));
+      zoomRef.current = clamped;
+      return clamped;
+    });
+  }, []);
+  const panRef = useRef({ x: 40, y: 60 });
+  const [pan, _setPan] = useState({ x: 40, y: 60 });
+  const setPan = useCallback((v: { x: number; y: number }) => {
+    panRef.current = v;
+    _setPan(v);
+  }, []);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ x: 0, y: 0, px: 0, py: 0 });
 
@@ -153,6 +167,8 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
     x: number; y: number; w: number; h: number;
   } | null>(null);
   const selStart = useRef<{ x: number; y: number } | null>(null);
+  // Track selected seat IDs from drag-select (non-paint mode)
+  const [dragSelectedIds, setDragSelectedIds] = useState<Set<string>>(new Set());
 
   // Tool mode: 'select' | 'pan'
   const [toolMode, setToolMode] = useState<'select' | 'pan'>('select');
@@ -336,45 +352,90 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   }, [seats]);
 
   // ── SVG coordinate helpers ──
+  // Use refs so native event handlers always see the latest zoom/pan
   const svgPoint = useCallback(
     (clientX: number, clientY: number) => {
       if (!svgRef.current) return { x: 0, y: 0 };
       const rect = svgRef.current.getBoundingClientRect();
-      const x = (clientX - rect.left) / zoom - pan.x;
-      const y = (clientY - rect.top) / zoom - pan.y;
+      const z = zoomRef.current;
+      const p = panRef.current;
+      const x = (clientX - rect.left) / z - p.x;
+      const y = (clientY - rect.top) / z - p.y;
       return { x, y };
     },
-    [zoom, pan],
+    [],
   );
 
-  // ── pan / drag handlers ──
+  // Refs for values used in document-level listeners
+  const isPanningRef = useRef(false);
+  const toolModeRef = useRef(toolMode);
+  const paintModeRef = useRef(paintMode);
+  const paintZoneRef = useRef(paintZone);
+  const seatsRef = useRef(seats);
+  useEffect(() => { toolModeRef.current = toolMode; }, [toolMode]);
+  useEffect(() => { paintModeRef.current = paintMode; }, [paintMode]);
+  useEffect(() => { paintZoneRef.current = paintZone; }, [paintZone]);
+  useEffect(() => { seatsRef.current = seats; }, [seats]);
+
+  // Helper: find seats in a selection rect
+  const findSeatsInRect = useCallback(
+    (rect: { x: number; y: number; w: number; h: number }) => {
+      return (seatsRef.current as Seat[]).filter((s) => {
+        if (s.seat_type === 'disabled' || s.seat_type === 'aisle') return false;
+        const sx = s.pos_x ?? (s.col_num - 1) * 60;
+        const sy = s.pos_y ?? (s.row_num - 1) * 60;
+        return (
+          sx >= rect.x &&
+          sx <= rect.x + rect.w &&
+          sy >= rect.y &&
+          sy <= rect.y + rect.h
+        );
+      });
+    },
+    [],
+  );
+
+  // ── pan / drag handlers (document-level for reliability) ──
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<SVGSVGElement>) => {
+      // Middle / right click → always pan
       if (e.button === 1 || e.button === 2) {
         e.preventDefault();
+        isPanningRef.current = true;
         setIsPanning(true);
-        panStart.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+        panStart.current = {
+          x: e.clientX, y: e.clientY,
+          px: panRef.current.x, py: panRef.current.y,
+        };
         return;
       }
-      if (toolMode === 'pan') {
+      if (toolModeRef.current === 'pan') {
+        isPanningRef.current = true;
         setIsPanning(true);
-        panStart.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+        panStart.current = {
+          x: e.clientX, y: e.clientY,
+          px: panRef.current.x, py: panRef.current.y,
+        };
         return;
       }
-      if (paintMode || toolMode === 'select') {
+      // Select / paint mode → start drag selection
+      if (paintModeRef.current || toolModeRef.current === 'select') {
         const pt = svgPoint(e.clientX, e.clientY);
         selStart.current = pt;
         setSelRect({ x: pt.x, y: pt.y, w: 0, h: 0 });
+        setDragSelectedIds(new Set());
       }
     },
-    [toolMode, paintMode, pan, svgPoint],
+    [svgPoint],
   );
 
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>) => {
-      if (isPanning) {
-        const dx = (e.clientX - panStart.current.x) / zoom;
-        const dy = (e.clientY - panStart.current.y) / zoom;
+  // Document-level move / up so drag continues outside SVG
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (isPanningRef.current) {
+        const z = zoomRef.current;
+        const dx = (e.clientX - panStart.current.x) / z;
+        const dy = (e.clientY - panStart.current.y) / z;
         setPan({ x: panStart.current.px + dx, y: panStart.current.py + dy });
         return;
       }
@@ -382,66 +443,104 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
         const pt = svgPoint(e.clientX, e.clientY);
         const sx = selStart.current.x;
         const sy = selStart.current.y;
-        setSelRect({
+        const newRect = {
           x: Math.min(sx, pt.x),
           y: Math.min(sy, pt.y),
           w: Math.abs(pt.x - sx),
           h: Math.abs(pt.y - sy),
-        });
+        };
+        setSelRect(newRect);
+        // Live preview: highlight seats inside rect
+        if (newRect.w > 2 || newRect.h > 2) {
+          const found = findSeatsInRect(newRect);
+          setDragSelectedIds(new Set(found.map((s) => s.id)));
+        }
       }
-    },
-    [isPanning, zoom, svgPoint],
-  );
+    };
 
-  const handleMouseUp = useCallback(() => {
-    if (isPanning) {
-      setIsPanning(false);
-      return;
-    }
-    if (selStart.current && selRect && (selRect.w > 5 || selRect.h > 5)) {
-      const selected = (seats as Seat[]).filter((s) => {
-        if (s.seat_type === 'disabled' || s.seat_type === 'aisle') return false;
-        const sx = s.pos_x ?? (s.col_num - 1) * 60;
-        const sy = s.pos_y ?? (s.row_num - 1) * 60;
-        return (
-          sx >= selRect.x &&
-          sx <= selRect.x + selRect.w &&
-          sy >= selRect.y &&
-          sy <= selRect.y + selRect.h
-        );
-      });
-      if (selected.length > 0 && paintMode) {
-        bulkUpdateMutation.mutate({
-          seat_ids: selected.map((s) => s.id),
-          zone: paintZone || null,
-        });
+    const onUp = () => {
+      if (isPanningRef.current) {
+        isPanningRef.current = false;
+        setIsPanning(false);
+        return;
       }
-    }
-    selStart.current = null;
-    setSelRect(null);
-  }, [isPanning, selRect, seats, paintMode, paintZone, bulkUpdateMutation]);
+      if (selStart.current) {
+        // Read latest selRect via setState callback (closure-free)
+        setSelRect((currentRect) => {
+          if (currentRect && (currentRect.w > 3 || currentRect.h > 3)) {
+            const selected = findSeatsInRect(currentRect);
+            if (selected.length > 0) {
+              if (paintModeRef.current) {
+                // Paint mode: apply zone to selected seats
+                bulkUpdateMutation.mutate({
+                  seat_ids: selected.map((s) => s.id),
+                  zone: paintZoneRef.current || null,
+                });
+                setDragSelectedIds(new Set());
+              } else {
+                // Select mode: keep them highlighted (user can then paint or assign)
+                setDragSelectedIds(new Set(selected.map((s) => s.id)));
+              }
+            }
+          }
+          return null; // clear rect
+        });
+        selStart.current = null;
+      }
+    };
 
-  // ── Zoom: normalize deltaY for smooth, consistent zoom ──
-  const handleWheel = useCallback(
-    (e: React.WheelEvent<SVGSVGElement>) => {
-      e.preventDefault();
-      // Normalize: most mice send ±120 per notch, trackpads send smaller values
-      const normalized = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) / 120, 1);
-      const factor = 1 - normalized * ZOOM_STEP;
-      setZoom((z) => {
-        const next = z * factor;
-        return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(next * 100) / 100));
-      });
-    },
-    [],
-  );
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [svgPoint, setPan, findSeatsInRect, bulkUpdateMutation]);
 
+  // ── Zoom: native wheel listener (non-passive) + zoom toward cursor ──
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = svg.getBoundingClientRect();
+      // Mouse position in screen coords relative to SVG element
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      // Normalize: mice send ±120 per notch, trackpads send smaller values
+      const normalized =
+        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) / 120, 1);
+      const factor = 1 - normalized * ZOOM_STEP;
+
+      const oldZ = zoomRef.current;
+      const newZ = Math.max(
+        MIN_ZOOM,
+        Math.min(MAX_ZOOM, Math.round(oldZ * factor * 100) / 100),
+      );
+      if (newZ === oldZ) return;
+
+      // Zoom toward cursor: adjust pan so the point under the cursor stays fixed
+      // Before: screenPt = (svgPt + pan) * oldZ => svgPt = screenPt/oldZ - pan
+      // After:  (svgPt + newPan) * newZ = screenPt
+      //   => newPan = screenPt / newZ - svgPt = screenPt / newZ - (screenPt / oldZ - pan)
+      const p = panRef.current;
+      const newPanX = mx / newZ - (mx / oldZ - p.x);
+      const newPanY = my / newZ - (my / oldZ - p.y);
+
+      // Batch updates
+      zoomRef.current = newZ;
+      panRef.current = { x: newPanX, y: newPanY };
+      _setZoom(newZ);
+      _setPan({ x: newPanX, y: newPanY });
+    };
     const prevent = (e: Event) => e.preventDefault();
+    svg.addEventListener('wheel', onWheel, { passive: false });
     svg.addEventListener('contextmenu', prevent);
-    return () => svg.removeEventListener('contextmenu', prevent);
+    return () => {
+      svg.removeEventListener('wheel', onWheel);
+      svg.removeEventListener('contextmenu', prevent);
+    };
   }, []);
 
   // ── seat click ──
@@ -455,6 +554,8 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
       });
       return;
     }
+    // Clear drag selection on single click
+    setDragSelectedIds(new Set());
     if (selectedSeat?.id === seat.id) {
       setSelectedSeat(null);
       setShowAssignPicker(false);
@@ -486,10 +587,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                 : 'default',
         }}
         onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
       >
         <g transform={`scale(${zoom}) translate(${pan.x}, ${pan.y})`}>
           {/* Stage bar */}
@@ -523,6 +620,7 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
             const fill = getSeatFill(seat, att, zoneColorMap);
             const stroke = getSeatStroke(seat, att, zoneColorMap);
             const isSelected = selectedSeat?.id === seat.id;
+            const isDragSelected = dragSelectedIds.has(seat.id);
             const rotation = seat.rotation || 0;
             const displayLabel = seat.attendee_id
               ? (att?.name?.slice(0, 2) || '✓')
@@ -537,15 +635,19 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
               >
                 <circle
                   r={SEAT_RADIUS}
-                  fill={fill}
-                  stroke={isSelected ? '#4f46e5' : stroke}
-                  strokeWidth={isSelected ? 3 : 1.5}
+                  fill={isDragSelected ? '#e0e7ff' : fill}
+                  stroke={
+                    isSelected ? '#4f46e5'
+                    : isDragSelected ? '#6366f1'
+                    : stroke
+                  }
+                  strokeWidth={isSelected ? 3 : isDragSelected ? 2.5 : 1.5}
                 />
-                {isSelected && (
+                {(isSelected || isDragSelected) && (
                   <circle
                     r={SEAT_RADIUS + 4}
                     fill="none"
-                    stroke="#4f46e5"
+                    stroke={isSelected ? '#4f46e5' : '#818cf8'}
                     strokeWidth={1.5}
                     strokeDasharray="4,3"
                   />
@@ -1007,6 +1109,59 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
             </div>
           )}
         </div>
+
+        {/* Drag-select action bar (non-paint mode) */}
+        {dragSelectedIds.size > 0 && !paintMode && (
+          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-medium text-indigo-900">
+              已框选 {dragSelectedIds.size} 个座位
+            </span>
+            <div className="flex items-center gap-2">
+              {ZONE_PALETTE.map((z) => (
+                <button
+                  key={z.name}
+                  onClick={() => {
+                    bulkUpdateMutation.mutate({
+                      seat_ids: Array.from(dragSelectedIds),
+                      zone: z.name,
+                    });
+                    setDragSelectedIds(new Set());
+                  }}
+                  className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border transition-colors hover:opacity-80"
+                  style={{
+                    backgroundColor: `${z.color}22`,
+                    borderColor: z.color,
+                    color: z.color,
+                  }}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: z.color }}
+                  />
+                  {z.name}
+                </button>
+              ))}
+              <button
+                onClick={() => {
+                  bulkUpdateMutation.mutate({
+                    seat_ids: Array.from(dragSelectedIds),
+                    zone: null,
+                  });
+                  setDragSelectedIds(new Set());
+                }}
+                className="px-2 py-1 rounded text-xs font-medium border border-gray-300 text-gray-500 hover:bg-gray-100"
+              >
+                清除分区
+              </button>
+            </div>
+            <button
+              onClick={() => setDragSelectedIds(new Set())}
+              className="ml-auto text-xs text-indigo-600 hover:text-indigo-800"
+            >
+              取消选择
+            </button>
+          </div>
+        )}
 
         {/* SVG Canvas */}
         <div className="bg-white rounded-lg shadow p-4">
