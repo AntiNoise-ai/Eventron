@@ -4,7 +4,6 @@ import {
   MessageCircle, Send, X, Minimize2, Bot, User,
   Paperclip, FileImage, FileSpreadsheet, FileText, Loader2
 } from 'lucide-react';
-import { apiClient } from '../lib/api';
 
 interface Message {
   role: 'user' | 'assistant';

@@ -579,7 +579,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   const renderSVGCanvas = () => {
     if (!hasSeats) return null;
 
-    const width = bounds.maxX - bounds.minX + 80;
     const height = bounds.maxY - bounds.minY + 80;
 
     return (

@@ -11,7 +11,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Bot, Send, Paperclip, X, ChevronRight, ChevronLeft,
-  FileImage, FileSpreadsheet, FileText, Loader2
+  FileImage, FileText, Loader2
 } from 'lucide-react';
 import { apiClient } from '../lib/api';
 

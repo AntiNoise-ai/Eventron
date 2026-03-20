@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Menu, X, LogOut } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { AgentChat } from './AgentChat';
