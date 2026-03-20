@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Grid3X3, Shuffle, Users, Download, Sparkles,
   Paintbrush, X, ZoomIn, ZoomOut, Move, MousePointer,
+  UserPlus, XCircle,
 } from 'lucide-react';
 import { apiClient } from '../../lib/api';
 import { SubAgentPanel } from '../SubAgentPanel';
@@ -38,6 +39,7 @@ interface Attendee {
   name: string;
   role: string;
   priority: number;
+  department: string | null;
   status: string;
 }
 
@@ -73,6 +75,8 @@ const ZONE_PALETTE = [
 const SEAT_RADIUS = 18;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
+// Zoom factor per wheel "step" (120 deltaY = 1 "notch" on most mice)
+const ZOOM_STEP = 0.06;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -134,6 +138,9 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   const [showZonePanel, setShowZonePanel] = useState(false);
   const [layoutType, setLayoutType] = useState(event.layout_type || 'grid');
   const [tableSize, setTableSize] = useState(8);
+  // Assign picker
+  const [showAssignPicker, setShowAssignPicker] = useState(false);
+  const [assignSearch, setAssignSearch] = useState('');
 
   // SVG pan/zoom
   const [zoom, setZoom] = useState(1);
@@ -201,6 +208,26 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
     },
   });
 
+  const assignSeatMutation = useMutation({
+    mutationFn: (params: { seatId: string; attendeeId: string }) =>
+      apiClient.assignSeat(eventId, params.seatId, params.attendeeId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['seats', eventId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', eventId] });
+      setShowAssignPicker(false);
+      setAssignSearch('');
+    },
+  });
+
+  const unassignSeatMutation = useMutation({
+    mutationFn: (seatId: string) =>
+      apiClient.updateSeat(eventId, seatId, { attendee_id: null }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['seats', eventId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', eventId] });
+    },
+  });
+
   const suggestZonesMutation = useMutation({
     mutationFn: () => apiClient.suggestZones(eventId),
     onSuccess: async (data: any) => {
@@ -256,11 +283,36 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   const hasSeats = (seats as Seat[]).length > 0;
   const assignedCount = (seats as Seat[]).filter((s) => s.attendee_id).length;
   const totalSeats = (seats as Seat[]).length;
-  const unassignedAttendees = (attendees as Attendee[]).filter(
-    (a) =>
-      a.status !== 'cancelled' &&
-      !(seats as Seat[]).some((s) => s.attendee_id === a.id),
-  );
+  // Attendees already seated
+  const seatedIds = useMemo(() => {
+    const set = new Set<string>();
+    (seats as Seat[]).forEach((s) => {
+      if (s.attendee_id) set.add(s.attendee_id);
+    });
+    return set;
+  }, [seats]);
+  const unassignedAttendees = useMemo(() =>
+    (attendees as Attendee[]).filter(
+      (a) => a.status !== 'cancelled' && !seatedIds.has(a.id),
+    ),
+  [attendees, seatedIds]);
+  const totalAttendees = (attendees as Attendee[]).filter(
+    (a) => a.status !== 'cancelled',
+  ).length;
+
+  // Filtered attendee list for assign picker
+  const filteredUnassigned = useMemo(() => {
+    if (!assignSearch.trim()) return unassignedAttendees.slice(0, 20);
+    const q = assignSearch.toLowerCase();
+    return unassignedAttendees
+      .filter(
+        (a) =>
+          a.name.toLowerCase().includes(q) ||
+          (a.role || '').toLowerCase().includes(q) ||
+          (a.department || '').toLowerCase().includes(q),
+      )
+      .slice(0, 20);
+  }, [unassignedAttendees, assignSearch]);
 
   // Compute SVG viewBox from seat positions
   const bounds = useMemo(() => {
@@ -298,7 +350,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   // ── pan / drag handlers ──
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<SVGSVGElement>) => {
-      // Right-click or middle-click → always pan
       if (e.button === 1 || e.button === 2) {
         e.preventDefault();
         setIsPanning(true);
@@ -310,7 +361,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
         panStart.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
         return;
       }
-      // Left-click in select/paint mode → start drag selection
       if (paintMode || toolMode === 'select') {
         const pt = svgPoint(e.clientX, e.clientY);
         selStart.current = pt;
@@ -348,7 +398,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
       setIsPanning(false);
       return;
     }
-    // Finish drag selection
     if (selStart.current && selRect && (selRect.w > 5 || selRect.h > 5)) {
       const selected = (seats as Seat[]).filter((s) => {
         if (s.seat_type === 'disabled' || s.seat_type === 'aisle') return false;
@@ -362,7 +411,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
         );
       });
       if (selected.length > 0 && paintMode) {
-        // Bulk zone paint
         bulkUpdateMutation.mutate({
           seat_ids: selected.map((s) => s.id),
           zone: paintZone || null,
@@ -373,17 +421,21 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
     setSelRect(null);
   }, [isPanning, selRect, seats, paintMode, paintZone, bulkUpdateMutation]);
 
-  // Zoom with scroll wheel
+  // ── Zoom: normalize deltaY for smooth, consistent zoom ──
   const handleWheel = useCallback(
     (e: React.WheelEvent<SVGSVGElement>) => {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      setZoom((z) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z * delta)));
+      // Normalize: most mice send ±120 per notch, trackpads send smaller values
+      const normalized = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) / 120, 1);
+      const factor = 1 - normalized * ZOOM_STEP;
+      setZoom((z) => {
+        const next = z * factor;
+        return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(next * 100) / 100));
+      });
     },
     [],
   );
 
-  // Prevent context menu on SVG
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -403,10 +455,16 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
       });
       return;
     }
-    setSelectedSeat(selectedSeat?.id === seat.id ? null : seat);
+    if (selectedSeat?.id === seat.id) {
+      setSelectedSeat(null);
+      setShowAssignPicker(false);
+    } else {
+      setSelectedSeat(seat);
+      setShowAssignPicker(false);
+    }
   };
 
-  // ── render ──
+  // ── render SVG ──
   const renderSVGCanvas = () => {
     if (!hasSeats) return null;
 
@@ -433,7 +491,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
       >
-        {/* Stage / front indicator */}
         <g transform={`scale(${zoom}) translate(${pan.x}, ${pan.y})`}>
           {/* Stage bar */}
           <rect
@@ -468,7 +525,7 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
             const isSelected = selectedSeat?.id === seat.id;
             const rotation = seat.rotation || 0;
             const displayLabel = seat.attendee_id
-              ? (att?.name?.charAt(0) || '✓')
+              ? (att?.name?.slice(0, 2) || '✓')
               : (seat.label || '');
 
             return (
@@ -531,6 +588,141 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
           )}
         </g>
       </svg>
+    );
+  };
+
+  // ── Selected seat detail panel with assign/unassign ──
+  const renderSeatDetail = () => {
+    if (!selectedSeat) return null;
+    const att = selectedSeat.attendee_id
+      ? attendeeMap.get(selectedSeat.attendee_id)
+      : undefined;
+
+    return (
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-semibold text-gray-900">
+            座位详情 — {selectedSeat.label}
+          </h4>
+          <button
+            onClick={() => { setSelectedSeat(null); setShowAssignPicker(false); }}
+            className="p-1 hover:bg-gray-100 rounded"
+          >
+            <X size={14} className="text-gray-400" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-4">
+          <div>
+            <span className="text-gray-500">坐标：</span>
+            <span className="font-medium">
+              ({Math.round(selectedSeat.pos_x ?? 0)},{' '}
+              {Math.round(selectedSeat.pos_y ?? 0)})
+            </span>
+          </div>
+          <div>
+            <span className="text-gray-500">类型：</span>
+            <span className="font-medium">{selectedSeat.seat_type}</span>
+          </div>
+          <div>
+            <span className="text-gray-500">分区：</span>
+            <span className="font-medium">
+              {selectedSeat.zone || '无'}
+            </span>
+          </div>
+          <div>
+            <span className="text-gray-500">入座人：</span>
+            <span className="font-medium">
+              {att
+                ? `${att.name} (${att.role}, P${att.priority})`
+                : '空座'}
+            </span>
+          </div>
+        </div>
+
+        {/* Assign / Unassign actions */}
+        <div className="border-t pt-3">
+          {selectedSeat.attendee_id && att ? (
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">
+                当前入座：<strong>{att.name}</strong>
+              </span>
+              <button
+                onClick={() => unassignSeatMutation.mutate(selectedSeat.id)}
+                disabled={unassignSeatMutation.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-red-600 border border-red-200 rounded-lg text-xs hover:bg-red-50 disabled:opacity-50"
+              >
+                <XCircle size={14} />
+                取消分配
+              </button>
+            </div>
+          ) : (
+            <div>
+              {!showAssignPicker ? (
+                <button
+                  onClick={() => setShowAssignPicker(true)}
+                  disabled={unassignedAttendees.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  <UserPlus size={14} />
+                  {unassignedAttendees.length === 0
+                    ? '没有待分配的参会者'
+                    : '指定入座人'}
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={assignSearch}
+                    onChange={(e) => setAssignSearch(e.target.value)}
+                    placeholder="搜索姓名、角色、部门..."
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    autoFocus
+                  />
+                  <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg divide-y">
+                    {filteredUnassigned.length === 0 ? (
+                      <div className="px-3 py-2 text-xs text-gray-400">
+                        无匹配结果
+                      </div>
+                    ) : (
+                      filteredUnassigned.map((a) => (
+                        <button
+                          key={a.id}
+                          onClick={() =>
+                            assignSeatMutation.mutate({
+                              seatId: selectedSeat.id,
+                              attendeeId: a.id,
+                            })
+                          }
+                          disabled={assignSeatMutation.isPending}
+                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-indigo-50 transition-colors disabled:opacity-50"
+                        >
+                          <div className="text-left">
+                            <span className="text-xs font-medium text-gray-900">
+                              {a.name}
+                            </span>
+                            <span className="text-[10px] text-gray-500 ml-2">
+                              {a.role} · P{a.priority}
+                              {a.department ? ` · ${a.department}` : ''}
+                            </span>
+                          </div>
+                          <UserPlus size={12} className="text-indigo-400" />
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { setShowAssignPicker(false); setAssignSearch(''); }}
+                    className="text-xs text-gray-500 hover:text-gray-700"
+                  >
+                    取消
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     );
   };
 
@@ -744,8 +936,10 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
 
               <div className="flex items-center gap-1 text-sm text-gray-500 ml-auto">
                 <Users size={16} />
-                已分配 {assignedCount}/{totalSeats} · 待分配{' '}
-                {unassignedAttendees.length} 人
+                已分配 {assignedCount}/{totalSeats}
+                {totalAttendees > 0 && (
+                  <> · 待分配 {unassignedAttendees.length}/{totalAttendees} 人</>
+                )}
               </div>
 
               <a
@@ -832,52 +1026,8 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
           )}
         </div>
 
-        {/* Selected Seat Detail */}
-        {selectedSeat && (
-          <div className="bg-white rounded-lg shadow p-6">
-            <h4 className="text-sm font-semibold text-gray-900 mb-3">
-              座位详情
-            </h4>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
-              <div>
-                <span className="text-gray-500">座位号：</span>
-                <span className="font-medium">{selectedSeat.label}</span>
-              </div>
-              <div>
-                <span className="text-gray-500">坐标：</span>
-                <span className="font-medium">
-                  ({Math.round(selectedSeat.pos_x ?? 0)},{' '}
-                  {Math.round(selectedSeat.pos_y ?? 0)})
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-500">类型：</span>
-                <span className="font-medium">{selectedSeat.seat_type}</span>
-              </div>
-              <div>
-                <span className="text-gray-500">分区：</span>
-                <span className="font-medium">
-                  {selectedSeat.zone || '无'}
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-500">入座人：</span>
-                <span className="font-medium">
-                  {selectedSeat.attendee_id
-                    ? (() => {
-                        const att = attendeeMap.get(
-                          selectedSeat.attendee_id,
-                        );
-                        return att
-                          ? `${att.name} (${att.role}, P${att.priority})`
-                          : '未知';
-                      })()
-                    : '空座'}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Selected Seat Detail with assign/unassign */}
+        {renderSeatDetail()}
 
         {/* Feedback messages */}
         {autoAssignMutation.isSuccess && (
@@ -911,7 +1061,11 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
             scope="seating"
             title="排座 AI 助手"
             placeholder="例如：帮我用圆桌布局重新排座..."
-            welcomeMessage="我可以帮你规划座位分区、调整排座策略，或优化异形会场布局。"
+            welcomeMessage="我可以帮你：
+1. 生成布局 — 如「用剧院弧形生成座位」
+2. 自动排座 — 如「按优先级排座」
+3. 分区规划 — 如「前3排设为贵宾区」
+4. 查看状态 — 如「目前排座情况」"
           />
         </div>
       )}
