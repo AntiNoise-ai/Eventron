@@ -162,6 +162,13 @@ class OrganizerPlugin(AgentPlugin):
         draft_key = event_id or "new"
         draft = self._drafts.setdefault(draft_key, {})
 
+        # Pre-populate draft from planner's event_draft if present
+        event_draft = state.get("event_draft")
+        if event_draft and not draft:
+            for k, v in event_draft.items():
+                if v is not None:
+                    draft[k] = v
+
         # Build state context
         state_ctx = self._build_state_context(event_id, draft)
         today_str = date.today().isoformat()
@@ -254,8 +261,13 @@ class OrganizerPlugin(AgentPlugin):
             parts.append(f"当前活动ID: {event_id}")
         if draft:
             parts.append(
-                f"正在收集的活动信息: "
+                f"已收集的活动信息（来自之前对话或图片分析）: "
                 f"{json.dumps(draft, ensure_ascii=False)}"
+            )
+            parts.append(
+                "重要：以上信息已由之前的对话/图片分析提取，"
+                "不要再重复询问这些信息。如果信息齐全就直接创建。"
+                "如果缺少 venue_rows/venue_cols，根据 estimated_attendees 推算。"
             )
         if not parts:
             parts.append("无活动上下文，用户刚开始对话")
@@ -334,11 +346,13 @@ class OrganizerPlugin(AgentPlugin):
         seat_svc = self.seat_svc
         if not seat_svc:
             return "\n\n服务不可用。", None
-        strategy = params.get("strategy", "vip_first")
+        strategy = params.get("strategy", "priority_first")
         label = {
             "random": "随机",
-            "vip_first": "VIP优先",
+            "priority_first": "优先级排座",
+            "vip_first": "VIP优先(兼容)",
             "by_department": "按部门",
+            "by_zone": "按分区",
         }.get(strategy, strategy)
         try:
             assignments = await seat_svc.auto_assign(

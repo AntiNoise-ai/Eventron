@@ -45,6 +45,13 @@ def build_graph(
         "planner": "planner",
     }
 
+    # Confirmation keywords that mean "go ahead with the plan"
+    _CONTINUE_KEYWORDS = {
+        "继续", "开始", "执行", "创建", "好", "好的", "可以",
+        "开始执行", "继续创建", "继续吧", "创建吧", "执行计划",
+        "是", "是的", "没问题", "确认", "ok", "go",
+    }
+
     async def _orchestrator(state: AgentState) -> dict[str, Any]:
         # 1) Forced scope → route directly to that plugin
         scope = state.get("scope")
@@ -60,7 +67,29 @@ def build_graph(
             if registry.get("planner") is not None:
                 return {"current_plugin": "planner"}
 
-        # 3) Normal LLM-based intent routing
+        # 3) If there's an active task_plan or event_draft and user is
+        #    confirming / continuing → route to organizer directly
+        event_draft = state.get("event_draft")
+        if task_plan or event_draft:
+            from langchain_core.messages import HumanMessage as HM
+            last_msg = ""
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, HM):
+                    last_msg = msg.content.strip()
+                    break
+            # Strip attachment prefixes for matching
+            clean = last_msg
+            if clean.startswith("["):
+                clean = clean.split("]", 1)[-1].strip()
+            if clean.lower() in _CONTINUE_KEYWORDS:
+                if registry.get("organizer") is not None:
+                    return {"current_plugin": "organizer"}
+            # If event_draft exists and user is providing follow-up info
+            # (like "500人" or dimensions), route to organizer
+            if event_draft and registry.get("organizer") is not None:
+                return {"current_plugin": "organizer"}
+
+        # 4) Normal LLM-based intent routing
         return await orchestrator_node(state, registry, llm)
 
     graph.add_node("orchestrator", _orchestrator)

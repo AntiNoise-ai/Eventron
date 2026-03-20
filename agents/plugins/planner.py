@@ -334,6 +334,10 @@ class PlannerPlugin(AgentPlugin):
         if task_plan:
             result["task_plan"] = task_plan
 
+        # Store structured event_info as event_draft for organizer
+        if plan_data and plan_data.get("event_info"):
+            result["event_draft"] = plan_data["event_info"]
+
         return result
 
 

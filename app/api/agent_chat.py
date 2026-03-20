@@ -59,6 +59,7 @@ def _get_session(session_id: str | None) -> tuple[str, dict]:
             "user_profile": None,
             "task_plan": [],
             "attachments": [],
+            "event_draft": None,
         }
     return sid, _sessions[sid]
 
@@ -149,6 +150,14 @@ async def agent_chat(
     sid, session = _get_session(session_id)
     msg = message.strip()
 
+    # Pre-populate user_profile from JWT organizer (skip identity plugin)
+    if not session.get("user_profile") and organizer:
+        session["user_profile"] = {
+            "name": getattr(organizer, "name", None) or getattr(organizer, "email", ""),
+            "organizer_id": str(getattr(organizer, "id", "")),
+            "role": "organizer",
+        }
+
     if event_id:
         session["event_id"] = event_id
 
@@ -197,6 +206,7 @@ async def agent_chat(
         "turn_output": None,
         "attachments": session.get("attachments", []),
         "task_plan": session.get("task_plan", []),
+        "event_draft": session.get("event_draft"),
         "scope": scope,
     }
 
@@ -229,8 +239,10 @@ async def agent_chat(
         session["user_profile"] = result["user_profile"]
     if result.get("task_plan"):
         session["task_plan"] = result["task_plan"]
+    if result.get("event_draft"):
+        session["event_draft"] = result["event_draft"]
 
-    # Clear attachments after processing
+    # Clear attachments after processing (but keep event_draft)
     if new_attachments:
         session["attachments"] = []
 
@@ -294,6 +306,7 @@ async def agent_chat_text(
         "turn_output": None,
         "attachments": [],
         "task_plan": session.get("task_plan", []),
+        "event_draft": session.get("event_draft"),
     }
 
     try:
@@ -318,6 +331,8 @@ async def agent_chat_text(
         session["user_profile"] = result["user_profile"]
     if result.get("task_plan"):
         session["task_plan"] = result["task_plan"]
+    if result.get("event_draft"):
+        session["event_draft"] = result["event_draft"]
 
     session["messages"].append(AIMessage(content=reply_text))
 

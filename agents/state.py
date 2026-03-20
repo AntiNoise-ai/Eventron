@@ -30,6 +30,7 @@ class AgentState(TypedDict):
         turn_output: Final response text for this turn.
         attachments: Uploaded files [{filename, content_type, path, extracted_text?}].
         task_plan: Planner's decomposed task plan (list of SubTask).
+        event_draft: Structured event info extracted by planner (passed to organizer).
         scope: Optional forced plugin scope (badge/checkin/seating/organizer).
     """
 
@@ -41,4 +42,5 @@ class AgentState(TypedDict):
     turn_output: str | None
     attachments: list[dict[str, Any]]
     task_plan: list[SubTask]
+    event_draft: dict[str, Any] | None
     scope: str | None
