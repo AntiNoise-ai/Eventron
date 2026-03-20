@@ -134,7 +134,6 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   const [strategy, setStrategy] = useState('priority_first');
   const [paintMode, setPaintMode] = useState(false);
   const [paintZone, setPaintZone] = useState<string>('贵宾区');
-  const [showAgent, setShowAgent] = useState(false);
   const [showZonePanel, setShowZonePanel] = useState(false);
   const [layoutType, setLayoutType] = useState(event.layout_type || 'grid');
   const [tableSize, setTableSize] = useState(8);
@@ -579,14 +578,11 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
   const renderSVGCanvas = () => {
     if (!hasSeats) return null;
 
-    const height = bounds.maxY - bounds.minY + 80;
-
     return (
       <svg
         ref={svgRef}
-        className="w-full border border-gray-200 rounded-lg bg-gray-50"
+        className="w-full h-full bg-gray-50"
         style={{
-          height: Math.min(600, Math.max(350, height * zoom + 80)),
           cursor: isPanning
             ? 'grabbing'
             : toolMode === 'pan'
@@ -837,87 +833,80 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
     );
   };
 
+  // Zone action helper for both paint-palette and drag-select bar
+  const renderZoneButtons = (
+    onSelect: (zone: string | null) => void,
+    size: 'sm' | 'md' = 'md',
+  ) => (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {ZONE_PALETTE.map((z) => (
+        <button
+          key={z.name}
+          onClick={() => onSelect(z.name)}
+          className={`flex items-center gap-1 rounded-full font-medium border-2 transition-all ${
+            paintMode && paintZone === z.name
+              ? 'ring-2 ring-offset-1 ring-indigo-500 scale-105'
+              : ''
+          } ${size === 'sm' ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'}`}
+          style={{
+            backgroundColor: `${z.color}22`,
+            borderColor: z.color,
+            color: z.color,
+          }}
+        >
+          <span
+            className={`rounded-full ${size === 'sm' ? 'w-2 h-2' : 'w-2.5 h-2.5'}`}
+            style={{ backgroundColor: z.color }}
+          />
+          {z.name}
+        </button>
+      ))}
+      <button
+        onClick={() => onSelect(null)}
+        className={`flex items-center gap-1 rounded-full font-medium border-2 border-gray-300 text-gray-500 ${
+          paintMode && paintZone === ''
+            ? 'ring-2 ring-offset-1 ring-indigo-500'
+            : ''
+        } ${size === 'sm' ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'}`}
+      >
+        <span className={`rounded-full bg-gray-300 ${size === 'sm' ? 'w-2 h-2' : 'w-2.5 h-2.5'}`} />
+        清除
+      </button>
+    </div>
+  );
+
   return (
-    <div className="flex gap-6">
-      {/* Main content */}
-      <div className="flex-1 space-y-6">
-        {/* Header + Actions */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">
-                座位布局
-              </h3>
-              <p className="text-sm text-gray-500 mt-1">
-                {event.venue_rows} 排 × {event.venue_cols} 列 ·
-                支持自由布局和异形会场
-              </p>
-            </div>
+    <div className="flex gap-4 h-[calc(100vh-180px)]">
+      {/* ═══ Left: Canvas + Controls ═══ */}
+      <div className="flex-1 flex flex-col min-w-0 gap-3">
 
-            {/* Legend */}
-            <div className="flex flex-wrap items-center gap-3 text-xs">
-              <span className="flex items-center gap-1">
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: '#bbf7d0', border: '1px solid #22c55e' }}
-                />
-                已分配
-              </span>
-              <span className="flex items-center gap-1">
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: '#c4b5fd', border: '1px solid #7c3aed' }}
-                />
-                高优先
-              </span>
-              <span className="flex items-center gap-1">
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: '#dbeafe', border: '1px solid #93c5fd' }}
-                />
-                空座
-              </span>
-              {activeZones.map((z) => (
-                <span key={z.name} className="flex items-center gap-1">
-                  <span
-                    className="w-3 h-3 rounded-full"
-                    style={{
-                      backgroundColor: `${z.color}33`,
-                      border: `1px solid ${z.color}`,
-                    }}
-                  />
-                  {z.name} ({z.count})
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Layout selector + Generate */}
-          <div className="flex flex-wrap gap-3 items-center mb-4">
+        {/* Toolbar row 1: Layout + view controls */}
+        <div className="bg-white rounded-lg shadow px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Layout type */}
             <select
               value={layoutType}
               onChange={(e) => setLayoutType(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               {LAYOUT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label} — {opt.desc}
+                  {opt.label}
                 </option>
               ))}
             </select>
 
             {(layoutType === 'roundtable' || layoutType === 'banquet') && (
-              <div className="flex items-center gap-1.5 text-sm">
-                <label className="text-gray-600">每桌:</label>
+              <div className="flex items-center gap-1 text-sm">
                 <input
                   type="number"
                   min={4}
                   max={16}
                   value={tableSize}
                   onChange={(e) => setTableSize(Number(e.target.value))}
-                  className="w-16 px-2 py-1.5 border border-gray-300 rounded text-center"
+                  className="w-14 px-1.5 py-1.5 border border-gray-300 rounded text-center text-sm"
                 />
-                <span className="text-gray-400">人</span>
+                <span className="text-gray-400 text-xs">人/桌</span>
               </div>
             )}
 
@@ -928,9 +917,9 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                 event.venue_rows === 0 ||
                 event.venue_cols === 0
               }
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-50"
             >
-              <Grid3X3 size={18} />
+              <Grid3X3 size={15} />
               {createLayoutMutation.isPending
                 ? '生成中...'
                 : hasSeats
@@ -938,314 +927,222 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                   : '生成座位'}
             </button>
 
-            {/* Zoom & pan tools */}
-            {hasSeats && (
-              <div className="flex items-center gap-1 border-l pl-3 ml-1">
-                <button
-                  onClick={() => setToolMode('select')}
-                  className={`p-1.5 rounded ${
-                    toolMode === 'select'
-                      ? 'bg-indigo-100 text-indigo-700'
-                      : 'text-gray-500 hover:bg-gray-100'
-                  }`}
-                  title="选择 / 框选"
-                >
-                  <MousePointer size={16} />
-                </button>
-                <button
-                  onClick={() => setToolMode('pan')}
-                  className={`p-1.5 rounded ${
-                    toolMode === 'pan'
-                      ? 'bg-indigo-100 text-indigo-700'
-                      : 'text-gray-500 hover:bg-gray-100'
-                  }`}
-                  title="拖拽平移"
-                >
-                  <Move size={16} />
-                </button>
-                <button
-                  onClick={() =>
-                    setZoom((z) => Math.min(MAX_ZOOM, z * 1.25))
-                  }
-                  className="p-1.5 rounded text-gray-500 hover:bg-gray-100"
-                  title="放大"
-                >
-                  <ZoomIn size={16} />
-                </button>
-                <button
-                  onClick={() =>
-                    setZoom((z) => Math.max(MIN_ZOOM, z * 0.8))
-                  }
-                  className="p-1.5 rounded text-gray-500 hover:bg-gray-100"
-                  title="缩小"
-                >
-                  <ZoomOut size={16} />
-                </button>
-                <span className="text-xs text-gray-400 ml-1">
-                  {Math.round(zoom * 100)}%
-                </span>
-              </div>
-            )}
+            <span className="w-px h-6 bg-gray-200" />
+
+            {/* Auto-assign */}
+            <select
+              value={strategy}
+              onChange={(e) => setStrategy(e.target.value)}
+              className="px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="random">随机</option>
+              <option value="priority_first">优先级</option>
+              <option value="by_department">按部门</option>
+              <option value="by_zone">按分区</option>
+            </select>
+            <button
+              onClick={() => autoAssignMutation.mutate()}
+              disabled={autoAssignMutation.isPending || unassignedAttendees.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50"
+            >
+              <Shuffle size={15} />
+              {autoAssignMutation.isPending ? '分配中...' : '排座'}
+            </button>
+
+            <span className="w-px h-6 bg-gray-200" />
+
+            {/* Zone tools */}
+            <button
+              onClick={() => suggestZonesMutation.mutate()}
+              disabled={suggestZonesMutation.isPending || !hasSeats}
+              className="flex items-center gap-1 px-2.5 py-1.5 bg-amber-500 text-white rounded text-sm hover:bg-amber-600 disabled:opacity-50"
+              title="AI 自动分区"
+            >
+              <Sparkles size={14} />
+              AI分区
+            </button>
+            <button
+              onClick={() => {
+                const next = !paintMode;
+                setPaintMode(next);
+                setShowZonePanel(next);
+                if (next) setToolMode('select');
+              }}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-sm font-medium transition-colors ${
+                paintMode
+                  ? 'bg-indigo-600 text-white'
+                  : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              <Paintbrush size={14} />
+              {paintMode ? '退出涂色' : '涂色'}
+            </button>
+
+            {/* Stats (right-aligned) */}
+            <div className="flex items-center gap-1 text-xs text-gray-500 ml-auto">
+              <Users size={14} />
+              {assignedCount}/{totalSeats}
+              {totalAttendees > 0 && (
+                <span> · 待{unassignedAttendees.length}人</span>
+              )}
+            </div>
+
+            <a
+              href={apiClient.getExportSeatmapUrl(eventId)}
+              className="p-1.5 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
+              title="导出"
+            >
+              <Download size={14} />
+            </a>
           </div>
 
-          {/* Assignment + zone tools */}
-          {hasSeats && (
-            <div className="flex flex-wrap gap-3 items-center">
-              <div className="flex items-center gap-2">
-                <select
-                  value={strategy}
-                  onChange={(e) => setStrategy(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="random">随机分配</option>
-                  <option value="priority_first">优先级排座（前排居中）</option>
-                  <option value="by_department">按部门分组</option>
-                  <option value="by_zone">按分区匹配</option>
-                </select>
-                <button
-                  onClick={() => autoAssignMutation.mutate()}
-                  disabled={
-                    autoAssignMutation.isPending ||
-                    unassignedAttendees.length === 0
-                  }
-                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium disabled:opacity-50"
-                >
-                  <Shuffle size={18} />
-                  {autoAssignMutation.isPending ? '分配中...' : '自动排座'}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2 border-l pl-3 ml-1">
-                <button
-                  onClick={() => suggestZonesMutation.mutate()}
-                  disabled={suggestZonesMutation.isPending}
-                  className="flex items-center gap-2 px-3 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors text-sm font-medium disabled:opacity-50"
-                  title="根据参会人优先级自动规划分区"
-                >
-                  <Sparkles size={16} />
-                  {suggestZonesMutation.isPending
-                    ? 'AI分区中...'
-                    : 'AI智能分区'}
-                </button>
-                <button
-                  onClick={() => {
-                    const next = !paintMode;
-                    setPaintMode(next);
-                    setShowZonePanel(next);
-                    if (next) setToolMode('select');
-                  }}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    paintMode
-                      ? 'bg-indigo-600 text-white'
-                      : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
-                  }`}
-                >
-                  <Paintbrush size={16} />
-                  {paintMode ? '退出涂色' : '手动分区 (框选)'}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-1 text-sm text-gray-500 ml-auto">
-                <Users size={16} />
-                已分配 {assignedCount}/{totalSeats}
-                {totalAttendees > 0 && (
-                  <> · 待分配 {unassignedAttendees.length}/{totalAttendees} 人</>
-                )}
-              </div>
-
-              <a
-                href={apiClient.getExportSeatmapUrl(eventId)}
-                className="flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium"
-              >
-                <Download size={16} />
-                导出
-              </a>
-            </div>
-          )}
-
-          {/* Zone paint palette */}
+          {/* Paint mode: zone palette inline below toolbar */}
           {paintMode && showZonePanel && (
-            <div className="mt-4 p-3 bg-indigo-50 rounded-lg border border-indigo-200">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-sm font-medium text-indigo-900">
-                  选择分区，然后在座位图上拖拽框选批量涂色：
-                </span>
-                <button
-                  onClick={() => {
-                    setPaintMode(false);
-                    setShowZonePanel(false);
-                  }}
-                  className="ml-auto p-1 hover:bg-indigo-100 rounded"
-                >
-                  <X size={16} className="text-indigo-600" />
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {ZONE_PALETTE.map((z) => (
-                  <button
-                    key={z.name}
-                    onClick={() => setPaintZone(z.name)}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border-2 transition-all ${
-                      paintZone === z.name
-                        ? 'ring-2 ring-offset-1 ring-indigo-500 scale-105'
-                        : ''
-                    }`}
-                    style={{
-                      backgroundColor: `${z.color}22`,
-                      borderColor: z.color,
-                      color: z.color,
-                    }}
-                  >
-                    <span
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: z.color }}
-                    />
-                    {z.name}
-                  </button>
-                ))}
-                <button
-                  onClick={() => setPaintZone('')}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border-2 border-gray-300 text-gray-500 ${
-                    paintZone === ''
-                      ? 'ring-2 ring-offset-1 ring-indigo-500'
-                      : ''
-                  }`}
-                >
-                  <span className="w-3 h-3 rounded-full bg-gray-300" />
-                  清除分区
-                </button>
-              </div>
+            <div className="mt-2 pt-2 border-t border-indigo-100 flex items-center gap-2">
+              <span className="text-xs text-indigo-700 whitespace-nowrap">涂色分区：</span>
+              {renderZoneButtons((z) => setPaintZone(z ?? ''), 'md')}
             </div>
           )}
         </div>
 
-        {/* Drag-select action bar (non-paint mode) */}
-        {dragSelectedIds.size > 0 && !paintMode && (
-          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex items-center gap-3 flex-wrap">
-            <span className="text-sm font-medium text-indigo-900">
-              已框选 {dragSelectedIds.size} 个座位
-            </span>
-            <div className="flex items-center gap-2">
-              {ZONE_PALETTE.map((z) => (
-                <button
-                  key={z.name}
-                  onClick={() => {
-                    bulkUpdateMutation.mutate({
-                      seat_ids: Array.from(dragSelectedIds),
-                      zone: z.name,
-                    });
-                    setDragSelectedIds(new Set());
-                  }}
-                  className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border transition-colors hover:opacity-80"
-                  style={{
-                    backgroundColor: `${z.color}22`,
-                    borderColor: z.color,
-                    color: z.color,
-                  }}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: z.color }}
-                  />
-                  {z.name}
-                </button>
-              ))}
-              <button
-                onClick={() => {
-                  bulkUpdateMutation.mutate({
-                    seat_ids: Array.from(dragSelectedIds),
-                    zone: null,
-                  });
-                  setDragSelectedIds(new Set());
-                }}
-                className="px-2 py-1 rounded text-xs font-medium border border-gray-300 text-gray-500 hover:bg-gray-100"
-              >
-                清除分区
-              </button>
-            </div>
+        {/* Toolbar row 2: View controls (zoom/pan/select) — sticky */}
+        {hasSeats && (
+          <div className="flex items-center gap-1.5 px-1">
             <button
-              onClick={() => setDragSelectedIds(new Set())}
-              className="ml-auto text-xs text-indigo-600 hover:text-indigo-800"
+              onClick={() => setToolMode('select')}
+              className={`p-1.5 rounded ${
+                toolMode === 'select'
+                  ? 'bg-indigo-100 text-indigo-700'
+                  : 'text-gray-400 hover:bg-gray-100'
+              }`}
+              title="选择 / 框选"
             >
-              取消选择
+              <MousePointer size={15} />
             </button>
+            <button
+              onClick={() => setToolMode('pan')}
+              className={`p-1.5 rounded ${
+                toolMode === 'pan'
+                  ? 'bg-indigo-100 text-indigo-700'
+                  : 'text-gray-400 hover:bg-gray-100'
+              }`}
+              title="拖拽平移"
+            >
+              <Move size={15} />
+            </button>
+            <button
+              onClick={() => setZoom((z) => Math.min(MAX_ZOOM, z * 1.25))}
+              className="p-1.5 rounded text-gray-400 hover:bg-gray-100"
+              title="放大"
+            >
+              <ZoomIn size={15} />
+            </button>
+            <button
+              onClick={() => setZoom((z) => Math.max(MIN_ZOOM, z * 0.8))}
+              className="p-1.5 rounded text-gray-400 hover:bg-gray-100"
+              title="缩小"
+            >
+              <ZoomOut size={15} />
+            </button>
+            <span className="text-[11px] text-gray-400">
+              {Math.round(zoom * 100)}%
+            </span>
+
+            {/* Legend (inline) */}
+            <div className="flex items-center gap-2 text-[11px] text-gray-500 ml-auto">
+              <span className="flex items-center gap-0.5">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#bbf7d0', border: '1px solid #22c55e' }} /> 已分配
+              </span>
+              <span className="flex items-center gap-0.5">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#c4b5fd', border: '1px solid #7c3aed' }} /> 高优先
+              </span>
+              <span className="flex items-center gap-0.5">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#dbeafe', border: '1px solid #93c5fd' }} /> 空座
+              </span>
+              {activeZones.map((z) => (
+                <span key={z.name} className="flex items-center gap-0.5">
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: `${z.color}33`, border: `1px solid ${z.color}` }} />
+                  {z.name}
+                </span>
+              ))}
+            </div>
           </div>
         )}
 
-        {/* SVG Canvas */}
-        <div className="bg-white rounded-lg shadow p-4">
+        {/* ═══ SVG Canvas (fills remaining height) ═══ */}
+        <div className="flex-1 bg-white rounded-lg shadow relative overflow-hidden min-h-0">
           {seatsLoading ? (
-            <div className="text-center text-gray-500 py-8">加载中...</div>
+            <div className="flex items-center justify-center h-full text-gray-500">
+              加载中...
+            </div>
           ) : !hasSeats ? (
-            <div className="text-center py-12">
-              <Grid3X3 size={48} className="mx-auto text-gray-300 mb-4" />
-              <p className="text-gray-500 mb-2">
+            <div className="flex flex-col items-center justify-center h-full">
+              <Grid3X3 size={48} className="text-gray-300 mb-4" />
+              <p className="text-gray-500 text-sm">
                 {event.venue_rows > 0 && event.venue_cols > 0
                   ? '选择布局类型，点击"生成座位"'
                   : '请先在设置中配置会场行列数'}
               </p>
             </div>
           ) : (
-            renderSVGCanvas()
+            <>
+              {renderSVGCanvas()}
+
+              {/* Floating drag-select action bar — absolute, no layout shift */}
+              {dragSelectedIds.size > 0 && !paintMode && (
+                <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 bg-white/95 backdrop-blur border border-indigo-200 rounded-lg shadow-lg px-3 py-2 flex items-center gap-2">
+                  <span className="text-xs font-semibold text-indigo-900 whitespace-nowrap">
+                    {dragSelectedIds.size} 个座位
+                  </span>
+                  {renderZoneButtons((zone) => {
+                    bulkUpdateMutation.mutate({
+                      seat_ids: Array.from(dragSelectedIds),
+                      zone,
+                    });
+                    setDragSelectedIds(new Set());
+                  }, 'sm')}
+                  <button
+                    onClick={() => setDragSelectedIds(new Set())}
+                    className="p-0.5 text-gray-400 hover:text-gray-600"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 
         {/* Selected Seat Detail with assign/unassign */}
         {renderSeatDetail()}
 
-        {/* Feedback messages */}
+        {/* Feedback toasts */}
         {autoAssignMutation.isSuccess && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800">
-            自动排座完成，共分配{' '}
-            {(autoAssignMutation.data as any)?.count || 0} 个座位
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
+            排座完成，分配 {(autoAssignMutation.data as any)?.count || 0} 个座位
           </div>
         )}
         {autoAssignMutation.isError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
             排座失败：{(autoAssignMutation.error as Error)?.message}
-          </div>
-        )}
-        {suggestZonesMutation.isSuccess && (
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-            AI 智能分区已应用！分区基于参会人优先级分布自动规划。
-          </div>
-        )}
-        {createLayoutMutation.isSuccess && (
-          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-sm text-indigo-800">
-            布局已生成！共创建 {totalSeats} 个座位。
           </div>
         )}
       </div>
 
-      {/* AI Agent Sidebar */}
-      {showAgent && (
-        <div className="w-80 flex-shrink-0">
-          <SubAgentPanel
-            eventId={eventId}
-            scope="seating"
-            title="排座 AI 助手"
-            placeholder="例如：帮我用圆桌布局重新排座..."
-            welcomeMessage="我可以帮你：
-1. 生成布局 — 如「用剧院弧形生成座位」
+      {/* ═══ Right: Agent Sidebar (always visible) ═══ */}
+      <div className="w-80 flex-shrink-0 flex flex-col min-h-0">
+        <SubAgentPanel
+          eventId={eventId}
+          scope="seating"
+          title="排座 AI 助手"
+          placeholder="如：生成剧院弧形布局、前3排设为贵宾区..."
+          welcomeMessage={`我可以帮你：
+1. 生成布局 — 如「用圆桌布局 8人一桌」
 2. 自动排座 — 如「按优先级排座」
 3. 分区规划 — 如「前3排设为贵宾区」
-4. 查看状态 — 如「目前排座情况」"
-          />
-        </div>
-      )}
-
-      {/* Floating AI toggle */}
-      <button
-        onClick={() => setShowAgent(!showAgent)}
-        className={`fixed bottom-6 right-6 p-3 rounded-full shadow-lg transition-colors z-30 ${
-          showAgent
-            ? 'bg-indigo-600 text-white'
-            : 'bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50'
-        }`}
-        title="排座 AI 助手"
-      >
-        <Sparkles size={20} />
-      </button>
+4. 查看状态 — 如「目前排座情况」`}
+        />
+      </div>
     </div>
   );
 }
