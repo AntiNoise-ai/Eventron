@@ -239,6 +239,9 @@ async def seed(reset: bool = False):
                         label=label,
                         seat_type=stype,
                         zone=zone,
+                        pos_x=(c - 1) * 60.0,
+                        pos_y=(r - 1) * 60.0,
+                        rotation=0.0,
                     )
                     session.add(seat)
                     seat_orm[(eid, r, c)] = seat

@@ -48,7 +48,11 @@ def make_seat(**overrides) -> dict:
         "col_num": 1,
         "label": None,
         "seat_type": "normal",
+        "zone": None,
         "attendee_id": None,
+        "pos_x": 0.0,
+        "pos_y": 0.0,
+        "rotation": 0.0,
     }
     return {**defaults, **overrides}
 
@@ -62,7 +66,11 @@ def make_seat_grid(rows: int, cols: int) -> list[dict]:
             "col_num": c,
             "label": f"{chr(64 + r)}{c}",  # A1, A2, B1, B2, ...
             "seat_type": "normal",
+            "zone": None,
             "attendee_id": None,
+            "pos_x": (c - 1) * 60.0,
+            "pos_y": (r - 1) * 60.0,
+            "rotation": 0.0,
         }
         for r in range(1, rows + 1)
         for c in range(1, cols + 1)

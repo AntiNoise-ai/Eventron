@@ -1,4 +1,4 @@
-"""Seat assignment + swap logic — core business rules."""
+"""Seat assignment + layout + swap logic — core business rules."""
 
 import uuid
 
@@ -17,6 +17,7 @@ from tools.seating_engine import (
     assign_seats_priority_first,
     assign_seats_random,
     assign_seats_vip_first,
+    generate_layout,
 )
 
 
@@ -31,11 +32,58 @@ class SeatingService:
         self._seat_repo = seat_repo
         self._attendee_repo = attendee_repo
 
+    # ------------------------------------------------------------------
+    # Venue layout creation
+    # ------------------------------------------------------------------
+
     async def create_venue_grid(
         self, event_id: uuid.UUID, rows: int, cols: int
     ) -> list[Seat]:
-        """Create a full seat grid for an event."""
+        """Create a simple rectangular seat grid (legacy API)."""
         return await self._seat_repo.bulk_create_grid(event_id, rows, cols)
+
+    async def create_venue_layout(
+        self,
+        event_id: uuid.UUID,
+        layout_type: str,
+        rows: int,
+        cols: int,
+        *,
+        table_size: int = 8,
+        aisle_every: int = 0,
+        spacing: float = 60.0,
+        replace: bool = True,
+    ) -> list[Seat]:
+        """Generate seats using a layout template.
+
+        If `replace` is True, existing seats are removed first.
+
+        Args:
+            event_id: Target event.
+            layout_type: grid|theater|roundtable|banquet|u_shape|classroom.
+            rows, cols: Venue dimensions (interpretation varies by layout).
+            table_size: Seats per table (roundtable/banquet).
+            aisle_every: Insert aisle column every N seats.
+            spacing: Canvas units between seats.
+            replace: Delete existing seats before creating new ones.
+
+        Returns:
+            List of created Seat ORM objects.
+        """
+        if replace:
+            await self._seat_repo.delete_by_event(event_id)
+
+        specs = generate_layout(
+            layout_type, rows, cols,
+            spacing=spacing,
+            table_size=table_size,
+            aisle_every=aisle_every,
+        )
+        return await self._seat_repo.bulk_create_from_specs(event_id, specs)
+
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
 
     async def get_seats(self, event_id: uuid.UUID) -> list[Seat]:
         """Get all seats for an event."""
@@ -44,6 +92,10 @@ class SeatingService:
     async def get_available_seats(self, event_id: uuid.UUID) -> list[Seat]:
         """Get unoccupied, non-disabled seats."""
         return await self._seat_repo.get_available_seats(event_id)
+
+    # ------------------------------------------------------------------
+    # Auto-assignment
+    # ------------------------------------------------------------------
 
     async def auto_assign(
         self,
@@ -114,6 +166,30 @@ class SeatingService:
             )
 
         return assignments
+
+    # ------------------------------------------------------------------
+    # Bulk operations
+    # ------------------------------------------------------------------
+
+    async def bulk_update_zone(
+        self,
+        seat_ids: list[uuid.UUID],
+        zone: str | None,
+    ) -> int:
+        """Set zone on multiple seats (drag-select zone painting)."""
+        return await self._seat_repo.bulk_update_zone(seat_ids, zone)
+
+    async def bulk_update_type(
+        self,
+        seat_ids: list[uuid.UUID],
+        seat_type: str,
+    ) -> int:
+        """Set seat_type on multiple seats."""
+        return await self._seat_repo.bulk_update_type(seat_ids, seat_type)
+
+    # ------------------------------------------------------------------
+    # Single-seat operations
+    # ------------------------------------------------------------------
 
     async def assign_seat(
         self, seat_id: uuid.UUID, attendee_id: uuid.UUID

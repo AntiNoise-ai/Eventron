@@ -7,7 +7,12 @@ from pydantic import ValidationError
 
 from app.schemas.attendee import AttendeeCreate
 from app.schemas.event import EventCreate, EventResponse, EventUpdate
-from app.schemas.seat import AutoAssignRequest, SeatCreate
+from app.schemas.seat import (
+    AutoAssignRequest,
+    BulkSeatUpdate,
+    LayoutRequest,
+    SeatCreate,
+)
 
 
 class TestEventSchemas:
@@ -125,3 +130,32 @@ class TestSeatSchemas:
     def test_auto_assign_invalid_strategy(self):
         with pytest.raises(ValidationError):
             AutoAssignRequest(strategy="magic")
+
+    def test_seat_create_with_position(self):
+        s = SeatCreate(row_num=1, col_num=1, pos_x=120.5, pos_y=60.0, rotation=45.0)
+        assert s.pos_x == 120.5
+        assert s.rotation == 45.0
+
+    def test_bulk_seat_update(self):
+        uid = uuid.uuid4()
+        b = BulkSeatUpdate(seat_ids=[uid], zone="贵宾区")
+        assert b.seat_ids == [uid]
+        assert b.zone == "贵宾区"
+
+    def test_bulk_seat_update_empty_ids_rejected(self):
+        with pytest.raises(ValidationError):
+            BulkSeatUpdate(seat_ids=[], zone="x")
+
+    def test_layout_request_defaults(self):
+        lr = LayoutRequest(rows=10, cols=8)
+        assert lr.layout_type == "grid"
+        assert lr.table_size == 8
+        assert lr.spacing == 60.0
+
+    def test_layout_request_roundtable(self):
+        lr = LayoutRequest(layout_type="roundtable", rows=5, cols=10, table_size=10)
+        assert lr.table_size == 10
+
+    def test_layout_request_invalid_type(self):
+        with pytest.raises(ValidationError):
+            LayoutRequest(layout_type="stadium", rows=5, cols=5)

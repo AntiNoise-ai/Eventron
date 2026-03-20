@@ -7,6 +7,7 @@ from tools.seating_engine import (
     assign_seats_by_department,
     assign_seats_random,
     assign_seats_vip_first,
+    generate_layout,
     generate_seat_labels,
 )
 
@@ -162,3 +163,79 @@ class TestGenerateSeatLabels:
         labels = generate_seat_labels(1, 1)
         assert len(labels) == 1
         assert labels[0]["label"] == "A1"
+
+
+class TestGenerateLayout:
+    """Tests for free-form layout generators."""
+
+    def _check_fields(self, seats: list[dict]):
+        """Assert all required fields are present."""
+        for s in seats:
+            assert "row_num" in s
+            assert "col_num" in s
+            assert "pos_x" in s
+            assert "pos_y" in s
+            assert "label" in s
+            assert "seat_type" in s
+            assert isinstance(s["pos_x"], (int, float))
+            assert isinstance(s["pos_y"], (int, float))
+
+    def test_grid_layout_correct_count(self):
+        seats = generate_layout("grid", 3, 4)
+        assert len(seats) == 12
+        self._check_fields(seats)
+
+    def test_grid_layout_positions(self):
+        seats = generate_layout("grid", 2, 2, spacing=60)
+        xs = sorted({s["pos_x"] for s in seats})
+        ys = sorted({s["pos_y"] for s in seats})
+        assert xs == [0.0, 60.0]
+        assert ys == [0.0, 60.0]
+
+    def test_theater_layout_curved(self):
+        """Theater seats should have varying x positions (arc)."""
+        seats = generate_layout("theater", 5, 10)
+        assert len(seats) >= 50
+        self._check_fields(seats)
+        # Back rows should be wider than front rows
+        row1_xs = [s["pos_x"] for s in seats if s["row_num"] == 1]
+        row5_xs = [s["pos_x"] for s in seats if s["row_num"] == 5]
+        assert max(row5_xs) - min(row5_xs) >= max(row1_xs) - min(row1_xs)
+
+    def test_classroom_layout(self):
+        seats = generate_layout("classroom", 3, 6)
+        assert len(seats) == 18
+        self._check_fields(seats)
+
+    def test_roundtable_layout(self):
+        seats = generate_layout("roundtable", 4, 6, table_size=8)
+        # 24 total seats, 3 tables of 8
+        assert len(seats) == 24
+        self._check_fields(seats)
+        # Labels should contain table prefix
+        assert seats[0]["label"].startswith("T")
+
+    def test_banquet_layout(self):
+        seats = generate_layout("banquet", 3, 4, table_size=8)
+        assert len(seats) == 12
+        self._check_fields(seats)
+
+    def test_u_shape_layout(self):
+        seats = generate_layout("u_shape", 5, 8)
+        # Left=5 + bottom=6 + right=5 = 16
+        assert len(seats) == 16
+        self._check_fields(seats)
+        labels = [s["label"] for s in seats]
+        assert any(l.startswith("L") for l in labels)
+        assert any(l.startswith("R") for l in labels)
+        assert any(l.startswith("B") for l in labels)
+
+    def test_unknown_layout_defaults_to_grid(self):
+        seats = generate_layout("unknown", 2, 3)
+        assert len(seats) == 6
+
+    def test_rotation_present_for_roundtable(self):
+        seats = generate_layout("roundtable", 2, 4, table_size=8)
+        rotations = {s.get("rotation", 0) for s in seats}
+        # Round tables should have varied rotations
+        assert len(rotations) > 1

@@ -190,12 +190,32 @@ export class ApiClient {
     return this.request('POST', `/events/${eventId}/seats/grid?rows=${rows}&cols=${cols}`, {});
   }
 
+  async createSeatLayout(
+    eventId: string,
+    body: {
+      layout_type: string;
+      rows: number;
+      cols: number;
+      table_size?: number;
+      spacing?: number;
+    },
+  ) {
+    return this.request('POST', `/events/${eventId}/seats/layout`, body);
+  }
+
   async autoAssignSeats(eventId: string, strategy: string = 'random') {
     return this.request('POST', `/events/${eventId}/seats/auto-assign`, { strategy });
   }
 
   async updateSeat(eventId: string, seatId: string, data: Record<string, unknown>) {
     return this.request('PATCH', `/events/${eventId}/seats/${seatId}`, data);
+  }
+
+  async bulkUpdateSeats(
+    eventId: string,
+    body: { seat_ids: string[]; zone?: string | null; seat_type?: string },
+  ) {
+    return this.request('PATCH', `/events/${eventId}/seats/bulk`, body);
   }
 
   async suggestZones(eventId: string) {

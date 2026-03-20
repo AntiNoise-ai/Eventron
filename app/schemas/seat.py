@@ -14,6 +14,9 @@ class SeatCreate(BaseModel):
     label: Optional[str] = Field(None, max_length=20)
     seat_type: str = Field("normal", pattern=r"^(normal|reserved|disabled|aisle)$")
     zone: Optional[str] = Field(None, max_length=50)
+    pos_x: Optional[float] = None
+    pos_y: Optional[float] = None
+    rotation: Optional[float] = 0.0
 
 
 class SeatUpdate(BaseModel):
@@ -25,6 +28,9 @@ class SeatUpdate(BaseModel):
     )
     zone: Optional[str] = Field(None, max_length=50)
     attendee_id: Optional[uuid.UUID] = None
+    pos_x: Optional[float] = None
+    pos_y: Optional[float] = None
+    rotation: Optional[float] = None
 
 
 class SeatResponse(BaseModel):
@@ -40,6 +46,36 @@ class SeatResponse(BaseModel):
     seat_type: str
     zone: Optional[str]
     attendee_id: Optional[uuid.UUID]
+    pos_x: Optional[float] = None
+    pos_y: Optional[float] = None
+    rotation: Optional[float] = 0.0
+
+
+class BulkSeatUpdate(BaseModel):
+    """Bulk-update multiple seats at once (e.g. zone painting via drag-select)."""
+
+    seat_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=5000)
+    zone: Optional[str] = Field(None, max_length=50)
+    seat_type: Optional[str] = Field(
+        None, pattern=r"^(normal|reserved|disabled|aisle)$"
+    )
+
+
+class LayoutRequest(BaseModel):
+    """Request body for generating a venue layout."""
+
+    layout_type: str = Field(
+        "grid",
+        pattern=(
+            r"^(grid|theater|roundtable|banquet|u_shape|classroom|custom)$"
+        ),
+    )
+    rows: int = Field(..., ge=1, le=100)
+    cols: int = Field(..., ge=1, le=100)
+    # Layout-specific overrides
+    table_size: int = Field(8, ge=4, le=16, description="Seats per table (roundtable/banquet)")
+    aisle_every: int = Field(0, ge=0, description="Insert aisle every N columns")
+    spacing: float = Field(60.0, ge=30, le=120, description="Seat spacing in canvas units")
 
 
 class AutoAssignRequest(BaseModel):

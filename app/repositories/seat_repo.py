@@ -1,8 +1,9 @@
 """Seat repository — all seat-related DB queries."""
 
 import uuid
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.models.seat import Seat
 from app.repositories.base import BaseRepository
@@ -24,7 +25,7 @@ class SeatRepository(BaseRepository[Seat]):
         return list(result.scalars().all())
 
     async def get_available_seats(self, event_id: uuid.UUID) -> list[Seat]:
-        """Fetch seats that have no attendee assigned and are not disabled/aisle."""
+        """Fetch seats that have no attendee and are not disabled/aisle."""
         stmt = (
             select(Seat)
             .where(Seat.event_id == event_id)
@@ -54,7 +55,9 @@ class SeatRepository(BaseRepository[Seat]):
         if seat_a is None or seat_b is None:
             return (None, None)
 
-        seat_a.attendee_id, seat_b.attendee_id = seat_b.attendee_id, seat_a.attendee_id
+        seat_a.attendee_id, seat_b.attendee_id = (
+            seat_b.attendee_id, seat_a.attendee_id
+        )
         await self._session.flush()
         await self._session.refresh(seat_a)
         await self._session.refresh(seat_b)
@@ -63,23 +66,97 @@ class SeatRepository(BaseRepository[Seat]):
     async def bulk_create_grid(
         self, event_id: uuid.UUID, rows: int, cols: int
     ) -> list[Seat]:
-        """Create a full seat grid for an event."""
-        seats = []
-        for r in range(1, rows + 1):
-            for c in range(1, cols + 1):
-                seat = Seat(
-                    event_id=event_id,
-                    row_num=r,
-                    col_num=c,
-                    label=f"{chr(64 + r)}{c}",
-                    seat_type="normal",
-                )
-                self._session.add(seat)
-                seats.append(seat)
+        """Create a rectangular seat grid (legacy — no pos_x/pos_y)."""
+        return await self.bulk_create_from_specs(
+            event_id,
+            [
+                {
+                    "row_num": r,
+                    "col_num": c,
+                    "label": f"{chr(64 + r)}{c}",
+                    "seat_type": "normal",
+                    "pos_x": (c - 1) * 60.0,
+                    "pos_y": (r - 1) * 60.0,
+                    "rotation": 0,
+                }
+                for r in range(1, rows + 1)
+                for c in range(1, cols + 1)
+            ],
+        )
+
+    async def bulk_create_from_specs(
+        self,
+        event_id: uuid.UUID,
+        specs: list[dict[str, Any]],
+    ) -> list[Seat]:
+        """Create seats from layout generator output (pos_x/pos_y aware).
+
+        Args:
+            event_id: Target event UUID.
+            specs: List of dicts from seating_engine.generate_layout().
+        """
+        seats: list[Seat] = []
+        for spec in specs:
+            seat = Seat(
+                event_id=event_id,
+                row_num=spec["row_num"],
+                col_num=spec["col_num"],
+                label=spec.get("label", ""),
+                seat_type=spec.get("seat_type", "normal"),
+                pos_x=spec.get("pos_x"),
+                pos_y=spec.get("pos_y"),
+                rotation=spec.get("rotation", 0),
+                zone=spec.get("zone"),
+            )
+            self._session.add(seat)
+            seats.append(seat)
         await self._session.flush()
         for s in seats:
             await self._session.refresh(s)
         return seats
+
+    async def bulk_update_zone(
+        self,
+        seat_ids: list[uuid.UUID],
+        zone: str | None,
+    ) -> int:
+        """Set zone on multiple seats at once (drag-select painting)."""
+        if not seat_ids:
+            return 0
+        stmt = (
+            update(Seat)
+            .where(Seat.id.in_(seat_ids))
+            .values(zone=zone)
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount  # type: ignore[return-value]
+
+    async def bulk_update_type(
+        self,
+        seat_ids: list[uuid.UUID],
+        seat_type: str,
+    ) -> int:
+        """Set seat_type on multiple seats at once."""
+        if not seat_ids:
+            return 0
+        stmt = (
+            update(Seat)
+            .where(Seat.id.in_(seat_ids))
+            .values(seat_type=seat_type)
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount  # type: ignore[return-value]
+
+    async def delete_by_event(self, event_id: uuid.UUID) -> int:
+        """Delete all seats for an event (before re-generating layout)."""
+        seats = await self.get_by_event(event_id)
+        count = len(seats)
+        for s in seats:
+            await self._session.delete(s)
+        await self._session.flush()
+        return count
 
     async def get_by_attendee(self, attendee_id: uuid.UUID) -> Seat | None:
         """Find the seat assigned to a specific attendee."""

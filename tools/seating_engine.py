@@ -1,15 +1,358 @@
-"""Seat assignment algorithms — pure functions, no DB, no IO.
+"""Seat assignment algorithms + layout generators — pure functions.
 
-All functions take plain dicts (not ORM objects) and return assignment lists.
-The calling agent is responsible for fetching data from services and passing it in.
+All functions take plain dicts (not ORM objects) and return assignment lists
+or seat specifications.  No DB, no IO.
 
 Priority system: attendee.priority (0=normal, higher=more important).
 Zone system: seat.zone (string label, None=general area).
 """
 
+import math
 import random
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_SPACING = 60.0  # virtual canvas units between seats
+
+
+# ===================================================================
+# Layout generators — return list of seat spec dicts
+# ===================================================================
+
+def generate_layout(
+    layout_type: str,
+    rows: int,
+    cols: int,
+    *,
+    spacing: float = DEFAULT_SPACING,
+    table_size: int = 8,
+    aisle_every: int = 0,
+) -> list[dict[str, Any]]:
+    """Dispatch to specific layout generator.
+
+    Returns list of seat spec dicts:
+      {row_num, col_num, pos_x, pos_y, rotation, label, seat_type}
+    """
+    generators = {
+        "grid": _layout_grid,
+        "theater": _layout_theater,
+        "classroom": _layout_classroom,
+        "roundtable": _layout_roundtable,
+        "banquet": _layout_banquet,
+        "u_shape": _layout_u_shape,
+    }
+    fn = generators.get(layout_type, _layout_grid)
+    return fn(
+        rows, cols,
+        spacing=spacing,
+        table_size=table_size,
+        aisle_every=aisle_every,
+    )
+
+
+def _layout_grid(
+    rows: int, cols: int, *, spacing: float = DEFAULT_SPACING, **_kw: Any,
+) -> list[dict[str, Any]]:
+    """Simple rectangular grid (default)."""
+    seats: list[dict[str, Any]] = []
+    for r in range(rows):
+        for c in range(cols):
+            seats.append({
+                "row_num": r + 1,
+                "col_num": c + 1,
+                "pos_x": round(c * spacing, 1),
+                "pos_y": round(r * spacing, 1),
+                "rotation": 0,
+                "label": f"{chr(65 + r % 26)}{c + 1}",
+                "seat_type": "normal",
+            })
+    return seats
+
+
+def _layout_theater(
+    rows: int, cols: int, *, spacing: float = DEFAULT_SPACING, **_kw: Any,
+) -> list[dict[str, Any]]:
+    """Theater: curved rows, wider toward the back.
+
+    Front rows are slightly narrower and curve toward a focal point (stage).
+    """
+    seats: list[dict[str, Any]] = []
+    # Virtual stage at (center_x, -100)
+    center_x = (cols - 1) * spacing / 2
+    base_radius = cols * spacing * 0.8
+
+    for r in range(rows):
+        radius = base_radius + r * spacing * 1.1
+        # Arc angle range — wider for back rows
+        arc_range = min(math.pi * 0.55, 0.4 + r * 0.02)
+        n_seats = cols + (r // 3)  # back rows can be slightly wider
+        n_seats = min(n_seats, cols + rows // 2)  # cap it
+        actual_cols = min(n_seats, cols + r // 3)
+
+        for c in range(actual_cols):
+            if actual_cols == 1:
+                angle = 0
+            else:
+                angle = -arc_range / 2 + c * arc_range / (actual_cols - 1)
+
+            px = center_x + radius * math.sin(angle)
+            py = radius * (1 - math.cos(angle))
+
+            seats.append({
+                "row_num": r + 1,
+                "col_num": c + 1,
+                "pos_x": round(px, 1),
+                "pos_y": round(py, 1),
+                "rotation": round(math.degrees(angle), 1),
+                "label": f"{chr(65 + r % 26)}{c + 1}",
+                "seat_type": "normal",
+            })
+    return seats
+
+
+def _layout_classroom(
+    rows: int, cols: int, *, spacing: float = DEFAULT_SPACING, **_kw: Any,
+) -> list[dict[str, Any]]:
+    """Classroom: paired seats with desk-width gap between pairs.
+
+    Pairs share a desk.  Extra vertical spacing between rows.
+    """
+    seats: list[dict[str, Any]] = []
+    desk_gap = spacing * 0.3  # gap between pairs
+    row_gap = spacing * 1.6  # extra vertical spacing (desk depth)
+
+    col_idx = 0
+    for r in range(rows):
+        col_idx = 0
+        px_offset = 0.0
+        for c in range(cols):
+            col_idx += 1
+            seats.append({
+                "row_num": r + 1,
+                "col_num": col_idx,
+                "pos_x": round(px_offset, 1),
+                "pos_y": round(r * row_gap, 1),
+                "rotation": 0,
+                "label": f"{chr(65 + r % 26)}{col_idx}",
+                "seat_type": "normal",
+            })
+            px_offset += spacing
+            # Add desk gap after every 2 seats
+            if col_idx % 2 == 0:
+                px_offset += desk_gap
+    return seats
+
+
+def _layout_roundtable(
+    rows: int,
+    cols: int,
+    *,
+    spacing: float = DEFAULT_SPACING,
+    table_size: int = 8,
+    **_kw: Any,
+) -> list[dict[str, Any]]:
+    """Roundtable: circular tables with seats around them.
+
+    `rows * cols` is treated as total seat count.  Tables are auto-arranged
+    in a roughly square grid.  Each table has `table_size` seats.
+    """
+    total_seats = rows * cols
+    n_tables = max(1, math.ceil(total_seats / table_size))
+
+    # Arrange tables in a grid
+    table_cols = max(1, math.ceil(math.sqrt(n_tables)))
+    table_rows = max(1, math.ceil(n_tables / table_cols))
+    table_spacing = spacing * (table_size / 2 + 1.5)
+    table_radius = spacing * table_size / (2 * math.pi) + spacing * 0.3
+
+    seats: list[dict[str, Any]] = []
+    seat_counter = 0
+    global_row = 1
+
+    for tr in range(table_rows):
+        for tc in range(table_cols):
+            table_idx = tr * table_cols + tc
+            if table_idx >= n_tables:
+                break
+            # Table center
+            tx = tc * table_spacing + table_spacing / 2
+            ty = tr * table_spacing + table_spacing / 2
+
+            # Place seats around the table
+            remaining = total_seats - seat_counter
+            seats_this_table = min(table_size, remaining)
+            if seats_this_table <= 0:
+                break
+
+            for s in range(seats_this_table):
+                angle = 2 * math.pi * s / seats_this_table
+                px = tx + table_radius * math.cos(angle)
+                py = ty + table_radius * math.sin(angle)
+                seat_counter += 1
+                # Use table number + seat position as label
+                tbl_label = f"T{table_idx + 1}-{s + 1}"
+
+                seats.append({
+                    "row_num": global_row,
+                    "col_num": s + 1,
+                    "pos_x": round(px, 1),
+                    "pos_y": round(py, 1),
+                    "rotation": round(math.degrees(angle) + 90, 1),
+                    "label": tbl_label,
+                    "seat_type": "normal",
+                })
+            global_row += 1
+
+    return seats
+
+
+def _layout_banquet(
+    rows: int,
+    cols: int,
+    *,
+    spacing: float = DEFAULT_SPACING,
+    table_size: int = 8,
+    **_kw: Any,
+) -> list[dict[str, Any]]:
+    """Banquet: rectangular tables with seats on two long sides.
+
+    Similar to roundtable but with rectangular tables.
+    """
+    total_seats = rows * cols
+    seats_per_side = max(2, table_size // 2)
+    n_tables = max(1, math.ceil(total_seats / table_size))
+
+    table_cols = max(1, math.ceil(math.sqrt(n_tables)))
+    table_rows = max(1, math.ceil(n_tables / table_cols))
+    table_w = seats_per_side * spacing
+    table_h = spacing * 2.5
+    table_spacing_x = table_w + spacing * 2
+    table_spacing_y = table_h + spacing * 3
+
+    seats: list[dict[str, Any]] = []
+    seat_counter = 0
+    global_row = 1
+
+    for tr in range(table_rows):
+        for tc in range(table_cols):
+            table_idx = tr * table_cols + tc
+            if table_idx >= n_tables:
+                break
+            tx = tc * table_spacing_x
+            ty = tr * table_spacing_y
+
+            remaining = total_seats - seat_counter
+            seats_this_table = min(table_size, remaining)
+            if seats_this_table <= 0:
+                break
+
+            half = math.ceil(seats_this_table / 2)
+            col_counter = 0
+
+            # Top side
+            for s in range(half):
+                col_counter += 1
+                px = tx + s * spacing + spacing * 0.5
+                py = ty
+                seat_counter += 1
+                seats.append({
+                    "row_num": global_row,
+                    "col_num": col_counter,
+                    "pos_x": round(px, 1),
+                    "pos_y": round(py, 1),
+                    "rotation": 0,
+                    "label": f"T{table_idx + 1}-{col_counter}",
+                    "seat_type": "normal",
+                })
+
+            # Bottom side
+            bottom_count = seats_this_table - half
+            for s in range(bottom_count):
+                col_counter += 1
+                px = tx + s * spacing + spacing * 0.5
+                py = ty + table_h
+                seat_counter += 1
+                seats.append({
+                    "row_num": global_row,
+                    "col_num": col_counter,
+                    "pos_x": round(px, 1),
+                    "pos_y": round(py, 1),
+                    "rotation": 180,
+                    "label": f"T{table_idx + 1}-{col_counter}",
+                    "seat_type": "normal",
+                })
+            global_row += 1
+
+    return seats
+
+
+def _layout_u_shape(
+    rows: int, cols: int, *, spacing: float = DEFAULT_SPACING, **_kw: Any,
+) -> list[dict[str, Any]]:
+    """U-shape: seats along three sides (left, bottom, right).
+
+    Open side faces the stage/front.  `rows` = depth, `cols` = width.
+    """
+    seats: list[dict[str, Any]] = []
+    width = (cols - 1) * spacing
+    depth = (rows - 1) * spacing
+    seat_counter = 0
+    row_counter = 1
+
+    # Left side (top-to-bottom)
+    left_seats = rows
+    for i in range(left_seats):
+        seat_counter += 1
+        seats.append({
+            "row_num": row_counter,
+            "col_num": 1,
+            "pos_x": 0.0,
+            "pos_y": round(i * spacing, 1),
+            "rotation": 90,
+            "label": f"L{i + 1}",
+            "seat_type": "normal",
+        })
+        row_counter += 1
+
+    # Bottom side (left-to-right, excluding corners already placed)
+    bottom_seats = max(0, cols - 2)
+    for i in range(bottom_seats):
+        seat_counter += 1
+        seats.append({
+            "row_num": row_counter,
+            "col_num": i + 2,
+            "pos_x": round((i + 1) * spacing, 1),
+            "pos_y": round(depth, 1),
+            "rotation": 0,
+            "label": f"B{i + 1}",
+            "seat_type": "normal",
+        })
+        row_counter += 1
+
+    # Right side (bottom-to-top)
+    right_seats = rows
+    for i in range(right_seats):
+        seat_counter += 1
+        seats.append({
+            "row_num": row_counter,
+            "col_num": cols,
+            "pos_x": round(width, 1),
+            "pos_y": round(depth - i * spacing, 1),
+            "rotation": -90,
+            "label": f"R{i + 1}",
+            "seat_type": "normal",
+        })
+        row_counter += 1
+
+    return seats
+
+
+# ===================================================================
+# Seat assignment algorithms
+# ===================================================================
 
 def assign_seats_random(
     attendees: list[dict[str, Any]],

@@ -54,7 +54,7 @@ Import rules: models→nothing | repos→models | services→repos | api→servi
 - `priority` drives seat assignment algorithms (front row, zone matching).
 - `attrs` JSONB = escape hatch. Never add columns for one-off attributes.
 
-**Seat:** event_id(FK), row_num, col_num, label, seat_type(normal|reserved|disabled|aisle), zone(nullable String, e.g. "贵宾区"/"嘉宾区"), attendee_id(FK). UniqueConstraint(event_id, row_num, col_num).
+**Seat:** event_id(FK), row_num, col_num, label, seat_type(normal|reserved|disabled|aisle), zone(nullable String, e.g. "贵宾区"/"嘉宾区"), pos_x(Float, canvas units), pos_y(Float, canvas units), rotation(Float, degrees), attendee_id(FK). UniqueConstraint(event_id, row_num, col_num). Free-form layouts use pos_x/pos_y for arbitrary positioning (roundtable circles, U-shape, theater arcs).
 
 **ApprovalRequest:** event_id, requester_id, change_type(swap|add_person|remove|reassign|bulk_change), change_detail(JSONB), status(pending|approved|rejected|expired), lg_thread_id
 
@@ -110,7 +110,7 @@ EventronError → NotFoundError(Event/Attendee/Seat/Template) | SeatNotAvailable
 
 ## Test Status
 
-179 unit tests passing. Files: test_seating_engine(17), test_excel_io(10), test_schemas(19), test_services(19), test_event_service(41), test_attendee_service(15), test_badge_template_service(13), test_auth_service(15), test_identity_service(13), test_import_service(14), test_dashboard_service(3). Skipped: test_qr_gen (missing qrcode dep in dev env).
+194 unit tests passing. Files: test_seating_engine(26), test_excel_io(10), test_schemas(26), test_services(19), test_event_service(41), test_attendee_service(15), test_badge_template_service(13), test_auth_service(15), test_identity_service(13), test_import_service(14), test_dashboard_service(3). Skipped: test_qr_gen (missing qrcode dep in dev env).
 
 ## Implementation Phases
 
@@ -143,6 +143,15 @@ EventronError → NotFoundError(Event/Attendee/Seat/Template) | SeatNotAvailable
   - **Frontend updates:** AddAttendeeModal (role presets + priority slider), AttendeesTab (priority-based badges), SeatingTab (zone painting + AI suggestions + SubAgentPanel).
   - **Migration:** `c3a7d8e2f195` — adds attendee.priority, seat.zone, migrates old role values + vip seat_type.
   - API: `PATCH /seats/{seat_id}` (update zone/type), `GET /seats/suggest-zones` (AI zone suggestions).
+
+- **Phase 10** — Free-form layouts + SVG seat map editor:
+  - **Seat model:** Added `pos_x`, `pos_y` (Float) and `rotation` (Float) for free-form positioning.
+  - **Layout generators:** 6 layout types in `seating_engine.generate_layout()`: grid, theater (curved arcs), classroom (paired desks), roundtable (circular tables), banquet (long tables), u_shape (3-sided).
+  - **SVG canvas editor:** Replaced CSS grid with SVG-based seat map. Pan (drag/middle-click), zoom (scroll wheel), tool modes (select/pan).
+  - **Drag-to-select zone painting:** Rubber-band box selection → bulk zone update. Replaces click-one-at-a-time.
+  - **Bulk update API:** `PATCH /seats/bulk` with `BulkSeatUpdate` schema (seat_ids + zone/type). Single DB round-trip via `UPDATE ... WHERE id IN (...)`.
+  - **Layout creation API:** `POST /seats/layout` with `LayoutRequest` schema (layout_type, rows, cols, table_size, spacing). Replaces old grid-only creation.
+  - **Migration:** `d4f8a1b2c396` — adds pos_x, pos_y, rotation; back-fills from row_num/col_num.
 
 ### Next 🔜
 - **Phase B (Portal)** — 物料计算与物料管理(按活动规模自动估算+手动调整), 铭牌设计(模板管理收进badge agent+活动内BadgeTab，外层菜单降级admin-only), 签到页设计(H5+AI), 子Agent面板, 签到实时看板(WebSocket), 审批中心

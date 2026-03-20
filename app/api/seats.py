@@ -5,7 +5,13 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps import get_attendee_service, get_event_service, get_seating_service
-from app.schemas.seat import AutoAssignRequest, SeatResponse, SeatUpdate
+from app.schemas.seat import (
+    AutoAssignRequest,
+    BulkSeatUpdate,
+    LayoutRequest,
+    SeatResponse,
+    SeatUpdate,
+)
 from app.services.attendee_service import AttendeeService
 from app.services.event_service import EventService
 from app.services.exceptions import (
@@ -30,15 +36,47 @@ async def list_seats(
     return [SeatResponse.model_validate(s) for s in seats]
 
 
-@router.post("/{event_id}/seats/grid", response_model=list[SeatResponse], status_code=201)
+@router.post(
+    "/{event_id}/seats/grid",
+    response_model=list[SeatResponse],
+    status_code=201,
+)
 async def create_seat_grid(
     event_id: uuid.UUID,
     rows: int,
     cols: int,
     svc: SeatingService = Depends(get_seating_service),
 ):
-    """Create a full seat grid for an event."""
+    """Create a simple rectangular seat grid (legacy)."""
     seats = await svc.create_venue_grid(event_id, rows, cols)
+    return [SeatResponse.model_validate(s) for s in seats]
+
+
+@router.post(
+    "/{event_id}/seats/layout",
+    response_model=list[SeatResponse],
+    status_code=201,
+)
+async def create_venue_layout(
+    event_id: uuid.UUID,
+    body: LayoutRequest,
+    svc: SeatingService = Depends(get_seating_service),
+):
+    """Generate seats using a layout template.
+
+    Supports: grid, theater, roundtable, banquet, u_shape, classroom.
+    Replaces any existing seats for the event.
+    """
+    seats = await svc.create_venue_layout(
+        event_id,
+        layout_type=body.layout_type,
+        rows=body.rows,
+        cols=body.cols,
+        table_size=body.table_size,
+        aisle_every=body.aisle_every,
+        spacing=body.spacing,
+        replace=True,
+    )
     return [SeatResponse.model_validate(s) for s in seats]
 
 
@@ -85,7 +123,7 @@ async def update_seat(
     body: SeatUpdate,
     svc: SeatingService = Depends(get_seating_service),
 ):
-    """Update seat properties (zone, type, label)."""
+    """Update seat properties (zone, type, label, position)."""
     seat = await svc._seat_repo.get_by_id(seat_id)
     if seat is None:
         raise HTTPException(status_code=404, detail="Seat not found")
@@ -95,6 +133,24 @@ async def update_seat(
         setattr(seat, key, val)
     await svc._seat_repo._session.flush()
     return SeatResponse.model_validate(seat)
+
+
+@router.patch("/{event_id}/seats/bulk")
+async def bulk_update_seats(
+    event_id: uuid.UUID,
+    body: BulkSeatUpdate,
+    svc: SeatingService = Depends(get_seating_service),
+):
+    """Bulk-update zone or type on multiple seats (drag-select painting)."""
+    updated = 0
+    if body.zone is not None:
+        updated = await svc.bulk_update_zone(body.seat_ids, body.zone)
+    elif body.seat_type is not None:
+        updated = await svc.bulk_update_type(body.seat_ids, body.seat_type)
+    else:
+        # Clear zone (set to None)
+        updated = await svc.bulk_update_zone(body.seat_ids, None)
+    return {"updated": updated}
 
 
 @router.post("/{event_id}/seats/swap")
