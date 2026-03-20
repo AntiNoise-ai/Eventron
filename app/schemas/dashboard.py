@@ -20,6 +20,6 @@ class DashboardStats(BaseModel):
     seats_available: int
     seat_utilization_rate: float
     pending_approvals: int
-    vip_count: int
-    speaker_count: int
+    high_priority_count: int
+    mid_priority_count: int
     vip_checked_in: int

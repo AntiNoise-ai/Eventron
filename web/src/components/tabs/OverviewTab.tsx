@@ -13,8 +13,8 @@ interface DashboardStats {
   absent_count: number;
   cancelled_count: number;
   checkin_rate: number;
-  vip_count: number;
-  speaker_count: number;
+  high_priority_count: number;
+  mid_priority_count: number;
   seats_total: number;
   seats_occupied: number;
   seats_available: number;
@@ -91,8 +91,8 @@ export function OverviewTab({ eventId }: OverviewTabProps) {
         />
         <StatCard
           icon={Star}
-          label="VIP参会者"
-          value={stats.vip_count}
+          label="重要嘉宾"
+          value={stats.high_priority_count}
           color="purple"
         />
         <StatCard
@@ -204,15 +204,15 @@ export function OverviewTab({ eventId }: OverviewTabProps) {
 
       {/* Participant Stats */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">参会者角色分布</h3>
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">参会者优先级分布</h3>
         <div className="grid grid-cols-2 gap-4">
-          <div className="p-4 bg-blue-50 rounded-lg">
-            <p className="text-sm text-blue-600 mb-1">演讲者</p>
-            <p className="text-2xl font-bold text-blue-900">{stats.speaker_count}</p>
+          <div className="p-4 bg-amber-50 rounded-lg">
+            <p className="text-sm text-amber-600 mb-1">高优先级 (≥10)</p>
+            <p className="text-2xl font-bold text-amber-900">{stats.high_priority_count}</p>
           </div>
-          <div className="p-4 bg-purple-50 rounded-lg">
-            <p className="text-sm text-purple-600 mb-1">VIP</p>
-            <p className="text-2xl font-bold text-purple-900">{stats.vip_count}</p>
+          <div className="p-4 bg-blue-50 rounded-lg">
+            <p className="text-sm text-blue-600 mb-1">中优先级 (1-9)</p>
+            <p className="text-2xl font-bold text-blue-900">{stats.mid_priority_count}</p>
           </div>
         </div>
       </div>
