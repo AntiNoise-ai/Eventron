@@ -116,6 +116,24 @@ async def assign_seat(
     return SeatResponse.model_validate(seat)
 
 
+@router.patch("/{event_id}/seats/bulk")
+async def bulk_update_seats(
+    event_id: uuid.UUID,
+    body: BulkSeatUpdate,
+    svc: SeatingService = Depends(get_seating_service),
+):
+    """Bulk-update zone or type on multiple seats (drag-select painting)."""
+    updated = 0
+    if body.zone is not None:
+        updated = await svc.bulk_update_zone(body.seat_ids, body.zone)
+    elif body.seat_type is not None:
+        updated = await svc.bulk_update_type(body.seat_ids, body.seat_type)
+    else:
+        # Clear zone (set to None)
+        updated = await svc.bulk_update_zone(body.seat_ids, None)
+    return {"updated": updated}
+
+
 @router.patch("/{event_id}/seats/{seat_id}", response_model=SeatResponse)
 async def update_seat(
     event_id: uuid.UUID,
@@ -133,24 +151,6 @@ async def update_seat(
         setattr(seat, key, val)
     await svc._seat_repo._session.flush()
     return SeatResponse.model_validate(seat)
-
-
-@router.patch("/{event_id}/seats/bulk")
-async def bulk_update_seats(
-    event_id: uuid.UUID,
-    body: BulkSeatUpdate,
-    svc: SeatingService = Depends(get_seating_service),
-):
-    """Bulk-update zone or type on multiple seats (drag-select painting)."""
-    updated = 0
-    if body.zone is not None:
-        updated = await svc.bulk_update_zone(body.seat_ids, body.zone)
-    elif body.seat_type is not None:
-        updated = await svc.bulk_update_type(body.seat_ids, body.seat_type)
-    else:
-        # Clear zone (set to None)
-        updated = await svc.bulk_update_zone(body.seat_ids, None)
-    return {"updated": updated}
 
 
 @router.post("/{event_id}/seats/swap")
