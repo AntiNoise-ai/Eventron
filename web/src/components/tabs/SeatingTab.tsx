@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Grid3X3, Shuffle, Users, Download, Sparkles,
   Paintbrush, X, ZoomIn, ZoomOut, Move, MousePointer,
-  UserPlus, XCircle,
+  UserPlus, XCircle, Maximize,
 } from 'lucide-react';
 import { apiClient } from '../../lib/api';
 import { SubAgentPanel } from '../SubAgentPanel';
@@ -698,7 +698,25 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
     );
   };
 
-  // ── Selected seat detail panel with assign/unassign ──
+  // ── Fit all: reset zoom/pan so all seats are visible ──
+  const fitAll = useCallback(() => {
+    if (!svgRef.current) return;
+    const svg = svgRef.current;
+    const rect = svg.getBoundingClientRect();
+    const svgW = rect.width;
+    const svgH = rect.height;
+    const contentW = bounds.maxX - bounds.minX + 80;
+    const contentH = bounds.maxY - bounds.minY + 80;
+    if (contentW <= 0 || contentH <= 0) return;
+    const fitZoom = Math.min(svgW / contentW, svgH / contentH, MAX_ZOOM) * 0.9;
+    const clamped = Math.max(MIN_ZOOM, Math.round(fitZoom * 100) / 100);
+    const fitPanX = (svgW / clamped - contentW) / 2 - bounds.minX + 40;
+    const fitPanY = (svgH / clamped - contentH) / 2 - bounds.minY + 40;
+    setZoom(clamped);
+    setPan({ x: fitPanX, y: fitPanY });
+  }, [bounds, setZoom, setPan]);
+
+  // ── Selected seat detail panel with assign/unassign + zone picker ──
   const renderSeatDetail = () => {
     if (!selectedSeat) return null;
     const att = selectedSeat.attendee_id
@@ -706,10 +724,10 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
       : undefined;
 
     return (
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="flex items-center justify-between mb-3">
+      <div className="bg-white rounded-lg shadow px-4 py-3">
+        <div className="flex items-center justify-between mb-2">
           <h4 className="text-sm font-semibold text-gray-900">
-            座位详情 — {selectedSeat.label}
+            {selectedSeat.label}
           </h4>
           <button
             onClick={() => { setSelectedSeat(null); setShowAssignPicker(false); }}
@@ -719,48 +737,74 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-4">
-          <div>
-            <span className="text-gray-500">坐标：</span>
-            <span className="font-medium">
-              ({Math.round(selectedSeat.pos_x ?? 0)},{' '}
-              {Math.round(selectedSeat.pos_y ?? 0)})
-            </span>
-          </div>
-          <div>
-            <span className="text-gray-500">类型：</span>
-            <span className="font-medium">{selectedSeat.seat_type}</span>
-          </div>
-          <div>
-            <span className="text-gray-500">分区：</span>
-            <span className="font-medium">
-              {selectedSeat.zone || '无'}
-            </span>
-          </div>
-          <div>
-            <span className="text-gray-500">入座人：</span>
-            <span className="font-medium">
-              {att
-                ? `${att.name} (${att.role}, P${att.priority})`
-                : '空座'}
-            </span>
+        {/* Info row */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mb-3">
+          <span>类型: <strong>{selectedSeat.seat_type}</strong></span>
+          <span>入座: <strong>{att ? `${att.name} (P${att.priority})` : '空座'}</strong></span>
+        </div>
+
+        {/* Zone picker — always visible for single seat */}
+        <div className="mb-3">
+          <div className="text-xs text-gray-500 mb-1.5">分区：</div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {ZONE_PALETTE.map((z) => (
+              <button
+                key={z.name}
+                onClick={() => {
+                  bulkUpdateMutation.mutate({
+                    seat_ids: [selectedSeat.id],
+                    zone: z.name,
+                  });
+                  setSelectedSeat({ ...selectedSeat, zone: z.name });
+                }}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border-2 transition-all ${
+                  selectedSeat.zone === z.name
+                    ? 'ring-2 ring-offset-1 ring-indigo-500 scale-105'
+                    : ''
+                }`}
+                style={{
+                  backgroundColor: `${z.color}22`,
+                  borderColor: z.color,
+                  color: z.color,
+                }}
+              >
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: z.color }} />
+                {z.name}
+              </button>
+            ))}
+            <button
+              onClick={() => {
+                bulkUpdateMutation.mutate({
+                  seat_ids: [selectedSeat.id],
+                  zone: null,
+                });
+                setSelectedSeat({ ...selectedSeat, zone: null });
+              }}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border-2 border-gray-300 text-gray-500 ${
+                !selectedSeat.zone ? 'ring-2 ring-offset-1 ring-indigo-500' : ''
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full bg-gray-300" />
+              无
+            </button>
           </div>
         </div>
 
         {/* Assign / Unassign actions */}
-        <div className="border-t pt-3">
+        <div className="border-t pt-2">
           {selectedSeat.attendee_id && att ? (
             <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">
-                当前入座：<strong>{att.name}</strong>
+              <span className="text-xs text-gray-600">
+                入座：<strong>{att.name}</strong>
+                <span className="text-gray-400 ml-1">({att.role})</span>
               </span>
               <button
                 onClick={() => unassignSeatMutation.mutate(selectedSeat.id)}
                 disabled={unassignSeatMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-red-600 border border-red-200 rounded-lg text-xs hover:bg-red-50 disabled:opacity-50"
+                className="flex items-center gap-1 px-2 py-1 text-red-600 border border-red-200 rounded text-[11px] hover:bg-red-50 disabled:opacity-50"
               >
-                <XCircle size={14} />
-                取消分配
+                <XCircle size={12} />
+                取消
               </button>
             </div>
           ) : (
@@ -769,11 +813,11 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                 <button
                   onClick={() => setShowAssignPicker(true)}
                   disabled={unassignedAttendees.length === 0}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs hover:bg-indigo-700 disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-600 text-white rounded text-xs hover:bg-indigo-700 disabled:opacity-50"
                 >
-                  <UserPlus size={14} />
+                  <UserPlus size={13} />
                   {unassignedAttendees.length === 0
-                    ? '没有待分配的参会者'
+                    ? '无待分配参会者'
                     : '指定入座人'}
                 </button>
               ) : (
@@ -783,14 +827,12 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                     value={assignSearch}
                     onChange={(e) => setAssignSearch(e.target.value)}
                     placeholder="搜索姓名、角色、部门..."
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-2.5 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     autoFocus
                   />
-                  <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg divide-y">
+                  <div className="max-h-32 overflow-y-auto border border-gray-200 rounded divide-y">
                     {filteredUnassigned.length === 0 ? (
-                      <div className="px-3 py-2 text-xs text-gray-400">
-                        无匹配结果
-                      </div>
+                      <div className="px-3 py-2 text-xs text-gray-400">无匹配</div>
                     ) : (
                       filteredUnassigned.map((a) => (
                         <button
@@ -802,18 +844,16 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                             })
                           }
                           disabled={assignSeatMutation.isPending}
-                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-indigo-50 transition-colors disabled:opacity-50"
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-indigo-50 transition-colors disabled:opacity-50"
                         >
                           <div className="text-left">
-                            <span className="text-xs font-medium text-gray-900">
-                              {a.name}
-                            </span>
-                            <span className="text-[10px] text-gray-500 ml-2">
+                            <span className="text-xs font-medium text-gray-900">{a.name}</span>
+                            <span className="text-[10px] text-gray-500 ml-1.5">
                               {a.role} · P{a.priority}
                               {a.department ? ` · ${a.department}` : ''}
                             </span>
                           </div>
-                          <UserPlus size={12} className="text-indigo-400" />
+                          <UserPlus size={11} className="text-indigo-400" />
                         </button>
                       ))
                     )}
@@ -1043,6 +1083,13 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
               title="缩小"
             >
               <ZoomOut size={15} />
+            </button>
+            <button
+              onClick={fitAll}
+              className="p-1.5 rounded text-gray-400 hover:bg-gray-100"
+              title="全览 — 适配所有座位到视图"
+            >
+              <Maximize size={15} />
             </button>
             <span className="text-[11px] text-gray-400">
               {Math.round(zoom * 100)}%
