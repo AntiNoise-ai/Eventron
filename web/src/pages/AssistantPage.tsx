@@ -100,8 +100,7 @@ export function AssistantPage() {
       message: msg.trim() || '请分析这些文件',
       files,
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, lastEventId]);
+  }, [sessionId, lastEventId, chatMutation]);
 
   const chatMutation = useMutation({
     mutationFn: ({ message, files }: { message: string; files: File[] }) =>

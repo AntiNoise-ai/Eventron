@@ -195,7 +195,90 @@ setInterval(refreshStats, 15000);
 nameInput.addEventListener("keydown", function (e) {
   if (e.key === "Enter") {
     e.preventDefault();
+    hideSuggestions();
     doSearch();
+  }
+  if (e.key === "Escape") {
+    hideSuggestions();
+  }
+});
+
+/* ── Live autocomplete suggestions ── */
+var suggestBox = document.createElement("div");
+suggestBox.id = "suggest-box";
+suggestBox.style.cssText =
+  "display:none;position:absolute;left:0;right:0;top:100%;" +
+  "background:#fff;border:1px solid #d1d5db;border-top:none;" +
+  "border-radius:0 0 12px 12px;max-height:200px;overflow-y:auto;" +
+  "box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:50;";
+// Attach to input wrapper
+var inputWrapper = nameInput.parentElement;
+if (inputWrapper) {
+  inputWrapper.style.position = "relative";
+  inputWrapper.appendChild(suggestBox);
+}
+
+var suggestTimer = null;
+nameInput.addEventListener("input", function () {
+  clearTimeout(suggestTimer);
+  var q = nameInput.value.trim();
+  if (q.length < 1) { hideSuggestions(); return; }
+  suggestTimer = setTimeout(function () { fetchSuggestions(q); }, 250);
+});
+
+function fetchSuggestions(q) {
+  fetch(API_BASE + "/suggest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: q }),
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.candidates && data.candidates.length > 0) {
+        showSuggestions(data.candidates);
+      } else {
+        hideSuggestions();
+      }
+    })
+    .catch(function () { hideSuggestions(); });
+}
+
+function showSuggestions(items) {
+  suggestBox.innerHTML = "";
+  items.forEach(function (c) {
+    var div = document.createElement("div");
+    div.style.cssText =
+      "padding:10px 16px;cursor:pointer;font-size:15px;" +
+      "border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:10px;";
+    div.onmouseenter = function () { div.style.background = "#f0f4ff"; };
+    div.onmouseleave = function () { div.style.background = ""; };
+
+    var detail = [];
+    if (c.title) detail.push(c.title);
+    if (c.organization) detail.push(c.organization);
+
+    div.innerHTML =
+      '<span style="font-weight:600;color:#1e293b;">' + escHtml(c.name) + '</span>' +
+      (detail.length
+        ? '<span style="font-size:12px;color:#94a3b8;">' + escHtml(detail.join(" · ")) + '</span>'
+        : '');
+
+    div.onclick = function () {
+      nameInput.value = c.name;
+      hideSuggestions();
+      doSearch();
+    };
+    suggestBox.appendChild(div);
+  });
+  suggestBox.style.display = "";
+}
+
+function hideSuggestions() { suggestBox.style.display = "none"; }
+
+/* Close suggestions on outside click */
+document.addEventListener("click", function (e) {
+  if (e.target !== nameInput && !suggestBox.contains(e.target)) {
+    hideSuggestions();
   }
 });
 

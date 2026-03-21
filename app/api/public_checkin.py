@@ -76,11 +76,31 @@ async def serve_checkin_page(
         mode="name",
         total=stats["total"],
         checked_in=stats["checked_in"],
-        custom_html=custom_html,
-        custom_css=custom_css,
+        custom_html=None,
+        custom_css=None,
         event_id=str(event_id),
     )
     return HTMLResponse(html)
+
+
+# ── Suggest (autocomplete, no side-effects) ───────────────────
+
+@router.post("/checkin/suggest")
+async def suggest_attendee(
+    event_id: uuid.UUID,
+    body: SearchRequest,
+    checkin_svc: CheckinService = Depends(get_checkin_service),
+):
+    """Suggest attendees by name/pinyin — no check-in side-effect.
+
+    Used for live autocomplete as the user types.
+    """
+    name = body.name.strip()
+    if not name:
+        return {"candidates": []}
+
+    candidates = await checkin_svc.suggest_by_name(event_id, name)
+    return {"candidates": candidates}
 
 
 # ── Search / Check-in API ──────────────────────────────────────

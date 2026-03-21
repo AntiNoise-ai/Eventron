@@ -1,6 +1,9 @@
 """Check-in processing — business logic for attendee check-in."""
 
+import re
 import uuid
+
+from pypinyin import lazy_pinyin, Style
 
 from app.repositories.attendee_repo import AttendeeRepository
 from app.repositories.seat_repo import SeatRepository
@@ -8,6 +11,44 @@ from app.services.exceptions import (
     AttendeeNotFoundError,
     InvalidStateTransitionError,
 )
+
+
+def _is_ascii(s: str) -> bool:
+    """Check if string contains only ASCII letters."""
+    return bool(re.fullmatch(r"[a-zA-Z]+", s))
+
+
+def _pinyin_initials(name: str) -> str:
+    """Get pinyin initials. e.g. '王小明' → 'wxm'."""
+    return "".join(lazy_pinyin(name, style=Style.FIRST_LETTER)).lower()
+
+
+def _pinyin_full(name: str) -> str:
+    """Get full pinyin. e.g. '王小明' → 'wangxiaoming'."""
+    return "".join(lazy_pinyin(name)).lower()
+
+
+def _pinyin_match(query: str, name: str) -> bool:
+    """Check if query matches name via pinyin (initials or full).
+
+    Supports: 'wxm' matches '王小明', 'wangxm' partial, 'wang' partial.
+    """
+    q = query.lower()
+    initials = _pinyin_initials(name)
+    full = _pinyin_full(name)
+    # Exact initials match
+    if q == initials:
+        return True
+    # Initials prefix
+    if initials.startswith(q):
+        return True
+    # Full pinyin prefix
+    if full.startswith(q):
+        return True
+    # Full pinyin contains
+    if q in full:
+        return True
+    return False
 
 
 class CheckinService:
@@ -70,9 +111,27 @@ class CheckinService:
     ) -> dict | list[dict]:
         """Check in by name within an event.
 
-        Returns check-in result if unique match, or list of candidates if ambiguous.
+        Supports Chinese name substring, pinyin initials (wxm → 王小明),
+        and full pinyin (wangxiaoming).
+
+        Returns check-in result if unique match, or list of candidates
+        if ambiguous.
         """
-        matches = await self._attendee_repo.fuzzy_match_by_name(event_id, name)
+        # 1) Try direct DB ILIKE match (Chinese substring)
+        matches = await self._attendee_repo.fuzzy_match_by_name(
+            event_id, name,
+        )
+
+        # 2) If no DB hit and query looks like ASCII → try pinyin
+        if not matches and _is_ascii(name):
+            all_attendees = await self._attendee_repo.get_by_event(
+                event_id,
+            )
+            matches = [
+                a for a in all_attendees
+                if a.status not in ("cancelled",)
+                and _pinyin_match(name, a.name)
+            ]
 
         if not matches:
             raise AttendeeNotFoundError(
@@ -91,6 +150,39 @@ class CheckinService:
                 "organization": a.organization,
             }
             for a in matches
+        ]
+
+    async def suggest_by_name(
+        self, event_id: uuid.UUID, name: str, limit: int = 8,
+    ) -> list[dict]:
+        """Search attendees by name/pinyin without checking in.
+
+        Used for live autocomplete on the check-in page.
+        """
+        # 1) DB ILIKE match
+        matches = await self._attendee_repo.fuzzy_match_by_name(
+            event_id, name,
+        )
+
+        # 2) Pinyin fallback
+        if not matches and _is_ascii(name):
+            all_attendees = await self._attendee_repo.get_by_event(
+                event_id,
+            )
+            matches = [
+                a for a in all_attendees
+                if a.status not in ("cancelled",)
+                and _pinyin_match(name, a.name)
+            ]
+
+        return [
+            {
+                "attendee_id": str(a.id),
+                "name": a.name,
+                "title": a.title,
+                "organization": a.organization,
+            }
+            for a in matches[:limit]
         ]
 
     async def get_checkin_stats(self, event_id: uuid.UUID) -> dict:

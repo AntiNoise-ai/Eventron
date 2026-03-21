@@ -50,6 +50,9 @@ dependencies = [
     # Email validation
     "email-validator>=2.0",
 
+    # Chinese pinyin for check-in name search
+    "pypinyin>=0.50",
+
     # Utilities
     "python-multipart>=0.0.9",
 ]

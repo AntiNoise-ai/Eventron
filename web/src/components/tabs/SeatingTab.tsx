@@ -70,11 +70,11 @@ const ZONE_COLORS = [
   '#e94560', '#00b894', '#fd79a8', '#636e72', '#0984e3',
 ];
 
-const SEAT_W = 50;   // seat width  (3 Chinese chars ≈ 39px @13px)
-const SEAT_H = 36;   // seat height
-const SEAT_RX = 5;   // corner radius — rounded-rect
-const SEL_PAD = 4;   // selection ring padding
-const BACK_H = 6;    // chair-back thickness
+const SEAT_W = 42;   // seat width  (3 Chinese chars ≈ 36px @12px; < 46 spacing)
+const SEAT_H = 32;   // seat height
+const SEAT_RX = 4;   // corner radius — rounded-rect
+const SEL_PAD = 3;   // selection ring padding
+const BACK_H = 5;    // chair-back thickness
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
 // Zoom factor per wheel "step" (120 deltaY = 1 "notch" on most mice)
@@ -706,7 +706,7 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
                 <text
                   textAnchor="middle"
                   dominantBaseline="central"
-                  fontSize={13}
+                  fontSize={12}
                   fontWeight="600"
                   fill="#374151"
                   transform={`rotate(${-rotation})`}
