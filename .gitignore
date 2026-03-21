@@ -48,3 +48,4 @@ web/.vite/
 .mypy_cache/
 .ruff_cache/
 SeatFlow_Organizer_Portal_Plan.docx
+data/agent_memory/00000000-0000-0000-0000-000000000002/memory.json
