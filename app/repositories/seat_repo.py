@@ -107,6 +107,7 @@ class SeatRepository(BaseRepository[Seat]):
                 pos_y=spec.get("pos_y"),
                 rotation=spec.get("rotation", 0),
                 zone=spec.get("zone"),
+                area_id=spec.get("area_id"),
             )
             self._session.add(seat)
             seats.append(seat)
@@ -157,6 +158,16 @@ class SeatRepository(BaseRepository[Seat]):
             await self._session.delete(s)
         await self._session.flush()
         return count
+
+    async def delete_by_area(self, area_id: uuid.UUID) -> int:
+        """Delete all seats in a specific venue area."""
+        stmt = select(Seat).where(Seat.area_id == area_id)
+        result = await self._session.execute(stmt)
+        seats = list(result.scalars().all())
+        for s in seats:
+            await self._session.delete(s)
+        await self._session.flush()
+        return len(seats)
 
     async def get_by_attendee(self, attendee_id: uuid.UUID) -> Seat | None:
         """Find the seat assigned to a specific attendee."""

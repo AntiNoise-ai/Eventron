@@ -40,6 +40,7 @@ class SeatResponse(BaseModel):
 
     id: uuid.UUID
     event_id: uuid.UUID
+    area_id: Optional[uuid.UUID] = None
     row_num: int
     col_num: int
     label: Optional[str]

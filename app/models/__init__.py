@@ -7,6 +7,7 @@ from app.models.base import Base, TimestampMixin, UUIDMixin
 from app.models.event import Event
 from app.models.organizer import Organizer
 from app.models.seat import Seat
+from app.models.venue_area import VenueArea
 
 __all__ = [
     "Base",
@@ -15,6 +16,7 @@ __all__ = [
     "Event",
     "Attendee",
     "Seat",
+    "VenueArea",
     "ApprovalRequest",
     "Organizer",
     "BadgeTemplate",

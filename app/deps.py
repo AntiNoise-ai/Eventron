@@ -43,6 +43,7 @@ from app.repositories.badge_template_repo import BadgeTemplateRepository
 from app.repositories.event_repo import EventRepository
 from app.repositories.organizer_repo import OrganizerRepository
 from app.repositories.seat_repo import SeatRepository
+from app.repositories.venue_area_repo import VenueAreaRepository
 
 
 def get_event_repo(db: AsyncSession = Depends(get_db)) -> EventRepository:
@@ -67,6 +68,10 @@ def get_organizer_repo(db: AsyncSession = Depends(get_db)) -> OrganizerRepositor
 
 def get_badge_template_repo(db: AsyncSession = Depends(get_db)) -> BadgeTemplateRepository:
     return BadgeTemplateRepository(db)
+
+
+def get_venue_area_repo(db: AsyncSession = Depends(get_db)) -> VenueAreaRepository:
+    return VenueAreaRepository(db)
 
 
 # ── Service providers ────────────────────────────────────────
@@ -94,8 +99,9 @@ def get_attendee_service(
 def get_seating_service(
     seat_repo: SeatRepository = Depends(get_seat_repo),
     attendee_repo: AttendeeRepository = Depends(get_attendee_repo),
+    area_repo: VenueAreaRepository = Depends(get_venue_area_repo),
 ) -> SeatingService:
-    return SeatingService(seat_repo, attendee_repo)
+    return SeatingService(seat_repo, attendee_repo, area_repo=area_repo)
 
 
 def get_checkin_service(

@@ -6,6 +6,7 @@ import {
   UserPlus, XCircle, Maximize,
 } from 'lucide-react';
 import { apiClient } from '../../lib/api';
+import type { VenueArea } from '../../lib/api';
 import { SubAgentPanel } from '../SubAgentPanel';
 
 /* ------------------------------------------------------------------ */
@@ -32,6 +33,7 @@ interface Seat {
   pos_x: number | null;
   pos_y: number | null;
   rotation: number | null;
+  area_id: string | null;
 }
 
 interface Attendee {
@@ -198,6 +200,11 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
     },
   });
 
+  const { data: areas = [] } = useQuery({
+    queryKey: ['areas', eventId],
+    queryFn: () => apiClient.getAreas(eventId),
+  });
+
   // ── mutations ──
   // Ref to centerView so mutation callback can call latest version
   const centerViewRef = useRef<() => void>(() => {});
@@ -220,6 +227,7 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
       await queryClient.invalidateQueries({ queryKey: ['seats', eventId] });
       queryClient.invalidateQueries({ queryKey: ['event', eventId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard', eventId] });
+      queryClient.invalidateQueries({ queryKey: ['areas', eventId] });
       // Reset to 100% zoom, centered on content
       setTimeout(() => centerViewRef.current(), 100);
     },
@@ -337,6 +345,36 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
       color: zoneColorMap.get(name) || '#6b7280',
     }));
   }, [seats, zoneColorMap]);
+
+  // Area lookup map
+  const areaMap = useMemo(() => {
+    const map = new Map<string, VenueArea>();
+    (areas as VenueArea[]).forEach((a) => map.set(a.id, a));
+    return map;
+  }, [areas]);
+
+  // Per-area bounding boxes (for labels + boundary rects)
+  const areaBounds = useMemo(() => {
+    const typed = seats as Seat[];
+    const map = new Map<string, { minX: number; minY: number; maxX: number; maxY: number; area: VenueArea }>();
+    for (const s of typed) {
+      if (!s.area_id) continue;
+      const area = areaMap.get(s.area_id);
+      if (!area) continue;
+      const x = s.pos_x ?? (s.col_num - 1) * 60;
+      const y = s.pos_y ?? (s.row_num - 1) * 60;
+      const existing = map.get(s.area_id);
+      if (existing) {
+        existing.minX = Math.min(existing.minX, x);
+        existing.minY = Math.min(existing.minY, y);
+        existing.maxX = Math.max(existing.maxX, x);
+        existing.maxY = Math.max(existing.maxY, y);
+      } else {
+        map.set(s.area_id, { minX: x, minY: y, maxX: x, maxY: y, area });
+      }
+    }
+    return map;
+  }, [seats, areaMap]);
 
   // ── derived values ──
   const hasSeats = (seats as Seat[]).length > 0;
@@ -623,25 +661,96 @@ export function SeatingTab({ eventId, event }: SeatingTabProps) {
         onMouseDown={handleMouseDown}
       >
         <g transform={`scale(${zoom}) translate(${pan.x}, ${pan.y})`}>
-          {/* Stage bar */}
-          <rect
-            x={bounds.minX}
-            y={bounds.minY - 10}
-            width={bounds.maxX - bounds.minX}
-            height={24}
-            rx={4}
-            fill="#1f2937"
-          />
-          <text
-            x={(bounds.minX + bounds.maxX) / 2}
-            y={bounds.minY + 6}
-            textAnchor="middle"
-            fill="white"
-            fontSize={11}
-            fontWeight="500"
-          >
-            讲台 / 前方
-          </text>
+          {/* Global stage bar (only when no areas have stage_labels) */}
+          {(areas as VenueArea[]).every((a) => !a.stage_label) && (
+            <>
+              <rect
+                x={bounds.minX}
+                y={bounds.minY - 10}
+                width={bounds.maxX - bounds.minX}
+                height={24}
+                rx={4}
+                fill="#1f2937"
+              />
+              <text
+                x={(bounds.minX + bounds.maxX) / 2}
+                y={bounds.minY + 6}
+                textAnchor="middle"
+                fill="white"
+                fontSize={11}
+                fontWeight="500"
+              >
+                讲台 / 前方
+              </text>
+            </>
+          )}
+
+          {/* Area boundaries, labels, and per-area stage labels */}
+          {Array.from(areaBounds.entries()).map(([areaId, ab]) => {
+            const pad = 28;
+            const rx = ab.minX - pad;
+            const ry = ab.minY - pad - 16;
+            const rw = ab.maxX - ab.minX + pad * 2;
+            const rh = ab.maxY - ab.minY + pad * 2 + 16;
+            return (
+              <g key={`area-${areaId}`}>
+                {/* Area boundary */}
+                <rect
+                  x={rx} y={ry} width={rw} height={rh}
+                  rx={6} fill="none"
+                  stroke="#cbd5e1" strokeWidth={1}
+                  strokeDasharray="8,4"
+                />
+                {/* Area name label */}
+                <text
+                  x={rx + 6} y={ry + 12}
+                  fontSize={11} fontWeight="600"
+                  fill="#64748b"
+                >
+                  {ab.area.name}
+                </text>
+                {/* Per-area stage/backdrop label */}
+                {ab.area.stage_label && (
+                  <>
+                    <rect
+                      x={rx + 2}
+                      y={ab.minY - pad - 12}
+                      width={rw - 4}
+                      height={20}
+                      rx={3}
+                      fill="#334155"
+                    />
+                    <text
+                      x={rx + rw / 2}
+                      y={ab.minY - pad + 2}
+                      textAnchor="middle"
+                      fill="white"
+                      fontSize={10}
+                      fontWeight="500"
+                    >
+                      {ab.area.stage_label}
+                    </text>
+                  </>
+                )}
+              </g>
+            );
+          })}
+
+          {/* Aisle indicators (visible walkway gaps) */}
+          {(seats as Seat[]).filter((s) => s.seat_type === 'aisle').map((seat) => {
+            const x = seat.pos_x ?? (seat.col_num - 1) * 60;
+            const y = seat.pos_y ?? (seat.row_num - 1) * 60;
+            return (
+              <g key={`aisle-${seat.id}`}>
+                <line
+                  x1={x} y1={y - SEAT_H / 2 - 4}
+                  x2={x} y2={y + SEAT_H / 2 + 4}
+                  stroke="#e2e8f0" strokeWidth={1}
+                  strokeDasharray="3,3"
+                />
+              </g>
+            );
+          })}
 
           {/* Seats */}
           {(seats as Seat[]).map((seat) => {

@@ -3,8 +3,10 @@
 import uuid
 
 from app.models.seat import Seat
+from app.models.venue_area import VenueArea
 from app.repositories.attendee_repo import AttendeeRepository
 from app.repositories.seat_repo import SeatRepository
+from app.repositories.venue_area_repo import VenueAreaRepository
 from app.services.exceptions import (
     AttendeeNotFoundError,
     DuplicateAssignmentError,
@@ -29,9 +31,11 @@ class SeatingService:
         self,
         seat_repo: SeatRepository,
         attendee_repo: AttendeeRepository,
+        area_repo: VenueAreaRepository | None = None,
     ):
         self._seat_repo = seat_repo
         self._attendee_repo = attendee_repo
+        self._area_repo = area_repo
 
     # ------------------------------------------------------------------
     # Venue layout creation
@@ -250,3 +254,68 @@ class SeatingService:
         if a is None or b is None:
             raise SeatNotFoundError("One or both seats not found")
         return (a, b)
+
+    # ------------------------------------------------------------------
+    # Venue areas
+    # ------------------------------------------------------------------
+
+    async def list_areas(self, event_id: uuid.UUID) -> list[VenueArea]:
+        """List all venue areas for an event."""
+        if self._area_repo is None:
+            return []
+        return await self._area_repo.get_by_event(event_id)
+
+    async def create_area(
+        self, event_id: uuid.UUID, **kwargs,
+    ) -> VenueArea:
+        """Create a new venue area."""
+        assert self._area_repo is not None
+        return await self._area_repo.create(event_id=event_id, **kwargs)
+
+    async def update_area(
+        self, area_id: uuid.UUID, **kwargs,
+    ) -> VenueArea | None:
+        """Update a venue area."""
+        assert self._area_repo is not None
+        return await self._area_repo.update(area_id, **kwargs)
+
+    async def delete_area(self, area_id: uuid.UUID) -> bool:
+        """Delete a venue area and all its seats."""
+        assert self._area_repo is not None
+        # Delete seats in this area first
+        area = await self._area_repo.get_by_id(area_id)
+        if area is None:
+            return False
+        await self._seat_repo.delete_by_area(area_id)
+        return await self._area_repo.delete(area_id)
+
+    async def generate_area_layout(
+        self, event_id: uuid.UUID, area_id: uuid.UUID,
+    ) -> list[Seat]:
+        """Generate seats within a specific area.
+
+        Uses the area's layout_type, rows, cols. Replaces existing
+        seats in this area (not the whole event).
+        """
+        assert self._area_repo is not None
+        area = await self._area_repo.get_by_id(area_id)
+        if area is None:
+            raise SeatNotFoundError(f"Area {area_id} not found")
+
+        # Delete existing seats in this area
+        await self._seat_repo.delete_by_area(area_id)
+
+        specs = generate_layout(
+            area.layout_type, area.rows, area.cols,
+            spacing=46.0,
+        )
+
+        # Offset specs by area's offset_x/offset_y
+        for s in specs:
+            s["pos_x"] = s.get("pos_x", 0) + area.offset_x
+            s["pos_y"] = s.get("pos_y", 0) + area.offset_y
+            s["area_id"] = area_id
+
+        return await self._seat_repo.bulk_create_from_specs(
+            event_id, specs,
+        )

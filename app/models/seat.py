@@ -13,6 +13,7 @@ from app.models.base import Base, UUIDMixin
 if TYPE_CHECKING:
     from app.models.attendee import Attendee
     from app.models.event import Event
+    from app.models.venue_area import VenueArea
 
 
 class Seat(Base, UUIDMixin):
@@ -43,12 +44,16 @@ class Seat(Base, UUIDMixin):
         Float, nullable=True, default=0.0
     )
 
+    area_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("venue_areas.id"), nullable=True
+    )
     attendee_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("attendees.id"), nullable=True
     )
 
     # Relationships
     event: Mapped[Event] = relationship(back_populates="seats")
+    area: Mapped[Optional[VenueArea]] = relationship(back_populates="seats")
     attendee: Mapped[Optional[Attendee]] = relationship(back_populates="seat")
 
     __table_args__ = (

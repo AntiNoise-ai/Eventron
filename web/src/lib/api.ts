@@ -10,6 +10,32 @@ interface ApiError {
   message?: string;
 }
 
+// ── Venue Area types ────────────────────────────────────────
+export interface VenueArea {
+  id: string;
+  event_id: string;
+  name: string;
+  layout_type: string;
+  rows: number;
+  cols: number;
+  display_order: number;
+  offset_x: number;
+  offset_y: number;
+  stage_label: string | null;
+  seat_count: number;
+}
+
+export interface VenueAreaCreate {
+  name: string;
+  layout_type?: string;
+  rows?: number;
+  cols?: number;
+  display_order?: number;
+  offset_x?: number;
+  offset_y?: number;
+  stage_label?: string | null;
+}
+
 export interface AgentConfig {
   name: string;
   model_tier: string;
@@ -279,6 +305,27 @@ export class ApiClient {
     body: { seat_ids: string[]; zone?: string | null; seat_type?: string },
   ) {
     return this.request('PATCH', `/events/${eventId}/seats/bulk`, body);
+  }
+
+  // ── Venue Areas ───────────────────────────────────────────
+  async getAreas(eventId: string) {
+    return this.request<VenueArea[]>('GET', `/events/${eventId}/areas`);
+  }
+
+  async createArea(eventId: string, data: VenueAreaCreate) {
+    return this.request<VenueArea>('POST', `/events/${eventId}/areas`, data);
+  }
+
+  async updateArea(eventId: string, areaId: string, data: Partial<VenueAreaCreate>) {
+    return this.request<VenueArea>('PATCH', `/events/${eventId}/areas/${areaId}`, data);
+  }
+
+  async deleteArea(eventId: string, areaId: string) {
+    return this.request<void>('DELETE', `/events/${eventId}/areas/${areaId}`);
+  }
+
+  async generateAreaLayout(eventId: string, areaId: string) {
+    return this.request<any[]>('POST', `/events/${eventId}/areas/${areaId}/layout`);
   }
 
   async suggestZones(eventId: string) {

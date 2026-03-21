@@ -15,6 +15,7 @@ from app.models.base import Base, TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from app.models.attendee import Attendee
     from app.models.seat import Seat
+    from app.models.venue_area import VenueArea
 
 
 class Event(Base, UUIDMixin, TimestampMixin):
@@ -44,5 +45,8 @@ class Event(Base, UUIDMixin, TimestampMixin):
         back_populates="event", cascade="all, delete-orphan"
     )
     seats: Mapped[list[Seat]] = relationship(
+        back_populates="event", cascade="all, delete-orphan"
+    )
+    areas: Mapped[list[VenueArea]] = relationship(
         back_populates="event", cascade="all, delete-orphan"
     )

@@ -42,11 +42,13 @@ def create_app() -> FastAPI:
     from app.api.attendees import router as attendees_router
     from app.api.events import router as events_router
     from app.api.seats import router as seats_router
+    from app.api.venue_areas import router as venue_areas_router
 
     app.include_router(events_router, prefix="/api/events", tags=["events"])
     app.include_router(seats_router, prefix="/api/events", tags=["seats"])
     app.include_router(attendees_router, prefix="/api/events", tags=["attendees"])
     app.include_router(approvals_router, prefix="/api/events", tags=["approvals"])
+    app.include_router(venue_areas_router, prefix="/api/events", tags=["venue-areas"])
 
     # ── Organizer Portal API (v1) ─────────────────────────────
     from app.api.agent_chat import router as agent_chat_router
