@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 from app.models.organizer import Organizer
-from app.services.auth_service import AuthService
+from app.services.auth_service import _hash_password
 
 
 async def create_admin(email: str, password: str, name: str):
@@ -35,7 +35,7 @@ async def create_admin(email: str, password: str, name: str):
             return
 
         # Hash password
-        password_hash = AuthService._hash_password(password)
+        password_hash = _hash_password(password)
 
         organizer = Organizer(
             email=email,
