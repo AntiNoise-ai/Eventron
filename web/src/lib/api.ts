@@ -137,7 +137,12 @@ export class ApiClient {
     }
 
     if (!response.ok) {
-      const errorData = (await response.json()) as ApiError;
+      let errorData: ApiError = {};
+      try {
+        errorData = (await response.json()) as ApiError;
+      } catch {
+        throw new Error(`服务器错误 (${response.status})`);
+      }
       throw new Error(errorData.detail || errorData.message || 'API Error');
     }
 

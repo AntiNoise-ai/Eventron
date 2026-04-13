@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # ── JWT ────────────────────────────────────────────────────────
     jwt_secret: str = "change-me-in-production-use-a-long-random-string"
 
+    # ── Auth ────────────────────────────────────────────────────────
+    allow_registration: bool = False  # 公开注册默认关闭
+
     # ── Paths ────────────────────────────────────────────────────
     template_dir: Path = Path("templates")
 

@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.config import settings
 from app.deps import get_auth_service
 from app.schemas.auth import (
     LoginRequest,
@@ -46,7 +47,9 @@ async def register(
     body: RegisterRequest,
     svc: AuthService = Depends(get_auth_service),
 ):
-    """Register a new organizer account."""
+    """Register a new organizer account (disabled by default)."""
+    if not settings.allow_registration:
+        raise HTTPException(status_code=403, detail="注册已关闭，请联系管理员")
     try:
         organizer = await svc.register(
             email=body.email,
