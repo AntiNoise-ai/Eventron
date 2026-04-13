@@ -8,7 +8,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   QrCode, Smartphone, Users, CheckCircle,
-  ExternalLink, Copy, RefreshCw,
+  ExternalLink, Copy, RefreshCw, X,
 } from 'lucide-react';
 import { apiClient } from '../../lib/api';
 import { SubAgentPanel } from '../SubAgentPanel';
@@ -23,14 +23,16 @@ interface DashboardStats {
   checkin_rate: number;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || '';
-
 export function CheckinDesignTab({ eventId }: CheckinDesignTabProps) {
   const [copied, setCopied] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
+  const [showQr, setShowQr] = useState(false);
 
-  const checkinUrl = `${window.location.origin}/p/${eventId}/checkin`;
+  // Use VITE_PUBLIC_URL for production domain, fallback to current origin
+  const publicBase = import.meta.env.VITE_PUBLIC_URL || window.location.origin;
+  const checkinUrl = `${publicBase}/p/${eventId}/checkin`;
   const iframeSrc = `/p/${eventId}/checkin`;
+  const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(checkinUrl)}`;
 
   const { data: stats } = useQuery({
     queryKey: ['dashboard', eventId],
@@ -96,11 +98,49 @@ export function CheckinDesignTab({ eventId }: CheckinDesignTabProps) {
               <ExternalLink size={12} />
               打开
             </a>
+            <button onClick={() => setShowQr(true)}
+              className="shrink-0 flex items-center gap-1 px-3 py-2 border rounded-lg text-xs text-gray-600 hover:bg-gray-50"
+            >
+              <QrCode size={12} />
+              二维码
+            </button>
           </div>
           <p className="text-[10px] text-gray-400">
-            参会者扫码打开此链接 → 输入姓名 → 完成签到。可将此链接生成二维码打印。
+            参会者扫码打开此链接 → 输入姓名 → 完成签到
           </p>
         </div>
+
+        {/* QR Code Modal */}
+        {showQr && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowQr(false)}>
+            <div className="bg-white rounded-2xl p-6 shadow-xl max-w-sm w-full mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+                  <QrCode size={18} className="text-indigo-600" />
+                  签到二维码
+                </h3>
+                <button onClick={() => setShowQr(false)} className="text-gray-400 hover:text-gray-600">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="flex justify-center">
+                <img src={qrImageUrl} alt="签到二维码" className="w-64 h-64 rounded-lg border" />
+              </div>
+              <p className="text-xs text-gray-500 text-center break-all font-mono">{checkinUrl}</p>
+              <div className="flex gap-2">
+                <button onClick={copyLink}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50">
+                  <Copy size={14} />
+                  {copied ? '已复制' : '复制链接'}
+                </button>
+                <a href={qrImageUrl} download={`checkin-qr-${eventId}.png`}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
+                  下载二维码
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Phone preview */}
         <div className="bg-white rounded-lg border border-gray-200 p-4">

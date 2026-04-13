@@ -8,7 +8,7 @@
  * - HITL interactive choice buttons
  * - File upload (images, Excel, PDF)
  */
-import { useState, useRef, useEffect, useCallback, DragEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {

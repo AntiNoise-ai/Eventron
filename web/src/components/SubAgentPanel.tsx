@@ -11,11 +11,11 @@
  * - File upload support
  * - Collapsible sidebar layout
  */
-import { useState, useRef, useEffect, useCallback, DragEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Bot, Send, Paperclip, X, ChevronRight, ChevronLeft,
-  FileImage, FileText, Loader2, Trash2, Upload, FolderOpen,
+  FileImage, FileText, Loader2, Trash2, Upload,
   CheckCircle, XCircle,
 } from 'lucide-react';
 import { apiClient } from '../lib/api';
