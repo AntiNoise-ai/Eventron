@@ -15,18 +15,27 @@ DEFAULT_COLUMN_MAP = {
     "姓名": "name",
     "name": "name",
     "职位": "title",
+    "职务": "title",
     "title": "title",
     "公司": "organization",
+    "组织": "organization",
+    "单位": "organization",
     "organization": "organization",
+    "company": "organization",
     "部门": "department",
     "department": "department",
     "角色": "role",
     "role": "role",
     "电话": "phone",
+    "手机": "phone",
     "phone": "phone",
     "邮箱": "email",
     "email": "email",
+    "胸牌": "title",
+    "胸牌（title）": "title",
+    "胸牌(title)": "title",
 }
+
 
 
 def import_attendees_from_excel(
@@ -75,7 +84,9 @@ def import_attendees_from_excel(
     if "name" not in field_indices:
         raise ValueError("Excel file must have a '姓名' or 'name' column")
 
-    # Parse data rows
+    # Parse data rows. Pure I/O — no regex splits, no field guessing.
+    # If a column carries "公司 + 职位" merged, the caller (an agent or
+    # smart importer) is responsible for further splitting.
     attendees = []
     for row in rows[1:]:
         if not row or not any(row):
@@ -84,6 +95,17 @@ def import_attendees_from_excel(
         for field, idx in field_indices.items():
             val = row[idx] if idx < len(row) else None
             att[field] = str(val).strip() if val is not None else None
+
+        name = att.get("name")
+        if name:
+            try:
+                from tools.chinese_norm import clean_name
+                cleaned = clean_name(name)
+                if cleaned:
+                    att["name"] = cleaned
+            except Exception:
+                pass
+
         if att.get("name"):
             attendees.append(att)
 
@@ -230,6 +252,119 @@ def read_excel_sheets_as_text(
 
     wb.close()
     return "\n".join(parts)
+
+
+# ── Excel structure inspector — pure facts only, no verdicts ─
+
+
+def inspect_excel_structure(
+    file_path: Path | None = None,
+    file_bytes: bytes | None = None,
+    *,
+    sample_rows: int = 5,
+) -> dict[str, Any]:
+    """Return raw structural facts about an Excel for an LLM to reason over.
+
+    No verdicts ("roster" / "seat_chart"), no thresholds — just facts.
+    The agent that calls this tool is responsible for classifying the
+    file based on what it sees.
+
+    Returns::
+
+        {
+          "sheets": [
+            {
+              "name": "Sheet1",
+              "total_rows": 295,
+              "max_width": 3,
+              "header_row": ["序號", "公司", "姓名"],
+              "sample_rows": [[1, "...", "..."], ...],
+              "stage_words": ["舞台"],     # matches found, empty if none
+              "name_cell_count": 588,       # CJK/alpha cells (rough)
+              "numeric_only_columns": [0],   # column indices that are pure numbers
+            }, ...
+          ]
+        }
+    """
+    if file_path is None and file_bytes is None:
+        raise ValueError("Provide either file_path or file_bytes")
+
+    if file_bytes:
+        wb = load_workbook(BytesIO(file_bytes), read_only=True)
+    else:
+        wb = load_workbook(file_path, read_only=True)
+
+    DECO_KW = (
+        "舞台", "舞臺", "stage", "通道", "走道", "aisle",
+        "讲台", "講臺", "主席台", "背景墙", "背景牆",
+    )
+
+    sheets: list[dict[str, Any]] = []
+    for ws_sheet in wb.worksheets:
+        rows = list(ws_sheet.iter_rows(values_only=True))
+        while rows and not any(
+            c is not None and str(c).strip() for c in rows[-1] or ()
+        ):
+            rows.pop()
+        if not rows:
+            continue
+        max_width = max((len(r or ()) for r in rows), default=0)
+        header = [
+            str(c).strip() if c is not None else ""
+            for c in (rows[0] or ())
+        ]
+        samples: list[list[Any]] = []
+        for r in rows[1:1 + sample_rows]:
+            samples.append([c for c in (r or ())])
+
+        stage_words: set[str] = set()
+        name_count = 0
+        for r in rows[:80]:
+            for c in r or ():
+                if c is None:
+                    continue
+                s = str(c)
+                for kw in DECO_KW:
+                    if kw in s:
+                        stage_words.add(kw)
+                if _is_name_cell(c):
+                    name_count += 1
+
+        # Detect numeric-only columns (序號 column will look like this)
+        numeric_cols: list[int] = []
+        for ci in range(max_width):
+            saw_value = False
+            all_numeric = True
+            for r in rows[1:50]:
+                if ci >= len(r or ()):
+                    continue
+                v = (r or ())[ci]
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    continue
+                saw_value = True
+                if isinstance(v, (int, float)):
+                    continue
+                try:
+                    float(str(v).strip())
+                except (TypeError, ValueError):
+                    all_numeric = False
+                    break
+            if saw_value and all_numeric:
+                numeric_cols.append(ci)
+
+        sheets.append({
+            "name": ws_sheet.title or "Sheet",
+            "total_rows": len(rows),
+            "max_width": max_width,
+            "header_row": header,
+            "sample_rows": samples,
+            "stage_words": sorted(stage_words),
+            "name_cell_count": name_count,
+            "numeric_only_columns": numeric_cols,
+        })
+
+    wb.close()
+    return {"sheets": sheets}
 
 
 def _is_label_cell(val: Any) -> bool:

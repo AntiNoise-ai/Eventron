@@ -15,7 +15,6 @@ auto-assigns seats in a single turn — no extra confirmation needed.
 from __future__ import annotations
 
 import json
-import math
 import re
 import uuid
 from datetime import date, datetime
@@ -50,12 +49,15 @@ ORGANIZER_SYSTEM = """你是 Eventron 会场智能排座助手。你帮助用户
 - 日期处理：用户说"明天"就算成明天的 ISO 日期，说"下周五"就算出来。**必须输出 YYYY-MM-DD 格式**。
 - **主动建议合理参数**。如果用户说"正方形布局"但有128人，直接建议12×12=144座（能容纳128人），不要让用户自己算。
 
-## 座位计算规则
-- "会场WxH米"：rows = floor(H / 行距), cols = floor(W / 列距)。默认行距0.9m，列距0.6m
-- "座位面积X平米"：宽=sqrt(面积*2/3), 深=sqrt(面积*3/2)，然后用这个宽深代替默认列距行距
-- 会场总面积推行列：先推算会场宽高（假设比例2:3或正方形），再算行列
-- **必须展示计算过程**
-- **人数推正方形**: rows=cols=ceil(sqrt(人数)), 确保总数≥人数
+## 座位尺寸推算（没有死规则，按事实推理）
+
+- 用户给"会场 W×H 米" → 用合理座椅间距推 rows×cols；展示你怎么算的
+- 用户只给人数 → **不要硬套 sqrt**；让 layout_type 决定形状：
+  · theater 偏宽（每排 18-30），rows = ceil(N / cols)
+  · classroom 偏方（每排 12-20）
+  · u_shape / roundtable 不是矩形，按桌组算
+  · 不确定时问用户场地形状
+- 拿不准就问，不要瞎填 venue_rows/cols
 
 ## 创建活动必需信息
 name, layout_type, venue_rows, venue_cols（必需）
@@ -295,20 +297,27 @@ class OrganizerPlugin(AgentPlugin):
         location = event_draft.get("location")
         layout_type = event_draft.get("layout_type", "theater")
 
-        # Calculate rows/cols from draft or estimate
+        # The agent (planner / organizer LLM) is responsible for emitting
+        # sane rows/cols. This path only executes when the user said
+        # "开始" on a confirmed plan, so the dimensions in event_draft are
+        # the agent's deliberate choice. We just take what we're given.
         rows = event_draft.get("estimated_rows") or event_draft.get("venue_rows")
         cols = event_draft.get("estimated_cols") or event_draft.get("venue_cols")
-        estimated = event_draft.get("estimated_attendees")
 
-        # If no rows/cols but have estimated attendees, calculate
-        if (not rows or not cols) and estimated:
-            side = math.ceil(math.sqrt(estimated))
-            rows = side
-            cols = side
-
+        # If the agent forgot to populate them, refuse rather than guess —
+        # ask the LLM to come back with a real plan.
         if not rows or not cols:
-            rows = rows or 10
-            cols = cols or 10
+            reply = (
+                "❌ 无法创建活动：缺少 venue_rows / venue_cols。"
+                " 请告诉我场地形状（剧院式/课桌式…）和预计人数，"
+                "我来帮你确认尺寸。"
+            )
+            return {
+                "messages": [AIMessage(content=reply)],
+                "turn_output": reply,
+            }
+        rows = int(rows)
+        cols = int(cols)
 
         svc = self.event_svc
         if not svc:
@@ -415,13 +424,16 @@ class OrganizerPlugin(AgentPlugin):
             return "\n\n EventService 不可用。", None, None
         try:
             event_date = _parse_date(params.get("event_date"))
+            layout_type = params.get("layout_type", "theater")
+            rows = int(params.get("venue_rows") or 0)
+            cols = int(params.get("venue_cols") or 0)
             event = await svc.create_event(
                 name=params["name"],
                 event_date=event_date,
                 location=params.get("location"),
-                layout_type=params.get("layout_type", "theater"),
-                venue_rows=params.get("venue_rows", 0),
-                venue_cols=params.get("venue_cols", 0),
+                layout_type=layout_type,
+                venue_rows=rows,
+                venue_cols=cols,
             )
             # Clear draft
             self._drafts.pop(draft_key, None)

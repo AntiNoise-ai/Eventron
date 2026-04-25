@@ -3,9 +3,11 @@
 Each tool is a pure async function that the LLM can call via tool_calling.
 Tools get service instances via closure from ``make_seating_tools()``.
 
-Design principle: tools are *thin wrappers* around services. The LLM
-decides WHEN and WHY to call them; the tools just execute and return
-a text summary the LLM can reason about.
+Design principle: tools are *thin wrappers* around services. They emit
+**facts**, not verdicts. The LLM decides WHEN and WHY to call them and
+how to interpret the results. When a tool needs deep reasoning over
+messy text (e.g. parsing 公司+职位 merged columns from a roster), it
+delegates to an LLM call internally rather than encoding regex rules.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ def make_seating_tools(
     seat_svc: Any,
     event_svc: Any,
     attendee_svc: Any,
+    llm_factory: Any | None = None,
 ) -> list:
     """Build LangChain tools with services bound via closure.
 
@@ -79,15 +82,61 @@ def make_seating_tools(
         rows: int,
         cols: int,
         table_size: int = 8,
+        confirm_unusual: bool = False,
     ) -> str:
         """创建座位布局（替换已有座位）。
+
+        如果 rows/cols 看起来"不太正常"（极端比例、远超人数、维度超大），
+        工具会拒绝执行并请你用 confirm_unusual=True 重试。这不是硬限制，
+        是给你一个反思机会：尤其要警惕"用 Excel 行数当场地排数"这种典型
+        失误。当你**真的**知道场地很大或形状特殊时，再 confirm_unusual=True。
 
         Args:
             layout_type: 布局类型 grid|theater|roundtable|banquet|u_shape|classroom
             rows: 排数
             cols: 每排座位数
             table_size: 每桌人数（仅 roundtable/banquet 用）
+            confirm_unusual: 已经核实过"奇怪"维度时设为 True，跳过反思阻拦
         """
+        if rows is None or cols is None or rows < 1 or cols < 1:
+            return "❌ rows/cols 必须是正整数。"
+
+        # Soft sanity guards — only fire when something looks suspicious.
+        # The agent can override with confirm_unusual=True after verifying.
+        warnings: list[str] = []
+        ratio = max(rows, cols) / max(1, min(rows, cols))
+        if ratio > 6:
+            warnings.append(
+                f"维度比例 {rows}×{cols}（{ratio:.0f}:1）非常失衡，"
+                "通常是把 Excel 行数当成场地排数引起的。"
+            )
+        # Capacity sanity vs current attendee count
+        try:
+            attendees_now = await attendee_svc.list_attendees_for_event(eid)
+            n_att = sum(1 for a in attendees_now if a.status != "cancelled")
+        except Exception:
+            n_att = 0
+        if n_att and rows * cols > max(40, n_att * 5):
+            warnings.append(
+                f"总座位 {rows*cols} 远超参会人数 {n_att}（>5×），"
+                "可能是单维选大了。"
+            )
+        if max(rows, cols) > 60:
+            warnings.append(
+                f"单维 {max(rows, cols)} 超过 60，超出常见会场尺寸。"
+            )
+
+        if warnings and not confirm_unusual:
+            tips = "\n  - " + "\n  - ".join(warnings)
+            return (
+                f"⚠️ {rows}×{cols} 看起来不太对：{tips}\n"
+                "如果你已经核实过场地确实就这么大，再次调用并加上 "
+                "confirm_unusual=True；否则请先：\n"
+                "  · list_attendees 看真实人数\n"
+                "  · 询问用户场地形状/尺寸\n"
+                "  · 或者用 suggest_venue_dims 让我推荐"
+            )
+
         seats = await seat_svc.create_venue_layout(
             eid,
             layout_type=layout_type,
@@ -222,15 +271,22 @@ def make_seating_tools(
 
     @tool
     async def import_attendees(attendees_json: str) -> str:
-        """批量导入参会者。已存在的同名参会者会更新角色等信息，不存在的会新增。
+        """批量导入参会者（**纯 CRUD 工具，不做任何字段拆分/补全**）。
+
+        你（LLM）负责把每条记录已经拆好。如果原始 Excel 把"公司+职位"
+        合并在一格，调用前请用 smart_import_roster；或者你自己读完
+        Excel 后逐行拆开后再传给本工具。
 
         Args:
-            attendees_json: JSON 数组，例如:
-                [{"name":"张三","role":"贵宾","organization":"XX公司"},
-                 {"name":"李四"}]
-                必须有 name 字段，其他字段可选:
+            attendees_json: JSON 数组，每项必须有 name，可选字段：
                 role, organization, title, department, priority
+                例: [{"name":"张三","organization":"XX公司","title":"总经理",
+                     "role":"贵宾","priority":80}]
+
+        返回：新增/更新/跳过 数量；按 (name, organization) 去重。
         """
+        from tools.chinese_norm import clean_name
+
         data = json.loads(attendees_json)
         existing = await attendee_svc.list_attendees_for_event(eid)
         existing_map: dict[str, Any] = {a.name: a for a in existing}
@@ -238,24 +294,41 @@ def make_seating_tools(
         created = 0
         updated = 0
         skipped = 0
+        seen: set[str] = set()
         for item in data:
             if not isinstance(item, dict):
                 continue
-            name = (item.get("name") or "").strip()
+            raw_name = (item.get("name") or "").strip()
+            name = clean_name(raw_name) or ""
             if not name:
                 skipped += 1
                 continue
 
-            # Collect updatable fields
+            org_val = (item.get("organization") or "").strip() or None
+            title_val = (item.get("title") or "").strip() or None
+
             fields: dict[str, Any] = {}
-            for f in ("role", "organization", "title", "department"):
-                if item.get(f):
-                    fields[f] = item[f]
+            if item.get("role"):
+                fields["role"] = item["role"]
+            if org_val:
+                fields["organization"] = org_val
+            if title_val:
+                fields["title"] = title_val
+            if item.get("department"):
+                fields["department"] = item["department"]
             if "priority" in item:
-                fields["priority"] = int(item["priority"])
+                try:
+                    fields["priority"] = int(item["priority"])
+                except (TypeError, ValueError):
+                    pass
+
+            dup_key = f"{name}|{org_val or ''}"
+            if dup_key in seen:
+                skipped += 1
+                continue
+            seen.add(dup_key)
 
             if name in existing_map:
-                # Update existing attendee's role/org/etc.
                 if fields:
                     try:
                         await attendee_svc.update_attendee(
@@ -267,7 +340,6 @@ def make_seating_tools(
                 else:
                     skipped += 1
             else:
-                # Create new attendee
                 try:
                     await attendee_svc.create_attendee(
                         eid, name=name, **fields,
@@ -282,8 +354,287 @@ def make_seating_tools(
         if updated:
             parts.append(f"更新 {updated} 人")
         if skipped:
-            parts.append(f"跳过 {skipped} 人（无变更/无效）")
+            parts.append(f"跳过 {skipped} 人（重复/无效）")
         return f"导入完成: {', '.join(parts)}" if parts else "没有需要导入的数据"
+
+    @tool
+    async def inspect_excel() -> str:
+        """检查活动 Excel 的**结构**，返回纯事实供你判断（不做分类、不做拆分）。
+
+        每个 sheet 报告：
+        - total_rows, max_width
+        - header_row（第一行原文）
+        - sample_rows（接下来 5 行原文）
+        - stage_words（命中的舞台/通道关键词，空 list 表示没有）
+        - name_cell_count（CJK/字母单元格的粗略计数）
+        - numeric_only_columns（纯数字列索引，常是序号列）
+
+        你看完这些事实后，自行判断：
+        - 如果是"花名册"（列名是姓名/公司/职位等）→ 用 smart_import_roster
+        - 如果是"空间座位图"（含 stage_words、cell 散布）→ analyze_seat_chart
+        - 不确定时直接问用户
+        """
+        from tools.event_files import find_latest_file_by_type
+        from tools.excel_io import inspect_excel_structure
+
+        entry = find_latest_file_by_type(event_id, "excel")
+        if not entry:
+            return "本活动没有上传过 Excel 文件"
+        info = inspect_excel_structure(file_path=entry["path"])
+        info["filename"] = entry.get("filename", "Excel")
+        return json.dumps(info, ensure_ascii=False, indent=2)
+
+    @tool
+    async def smart_import_roster(
+        column_mapping_hint: str = "",
+        default_role: str = "参会者",
+    ) -> str:
+        """读取 Excel 花名册，**用 LLM 拆分混合字段**后批量导入。
+
+        适用于："公司"和"职位"被合并写在一格"的常见场景，例如:
+            "北方石油國際有限公司 總經理"
+            "中信財務（國際）有限公司 公司總經理"
+        不靠 regex / 后缀表 — 真正用 LLM 在工具内部一次性把所有行拆好，
+        再用 priority/role 推断写入 DB。
+
+        Args:
+            column_mapping_hint: 可选，告诉拆分 LLM 哪一列是什么。
+                例: "col0=序号, col1=公司+职位混合, col2=姓名"
+                留空时 LLM 会自己看头部和示例行猜列含义。
+            default_role: 找不到角色信息时的默认 role，默认"参会者"
+
+        前置条件：先 inspect_excel 看清结构，再调本工具。
+        """
+        if llm_factory is None:
+            return (
+                "❌ 没有 LLM 工厂，无法运行 smart_import_roster。"
+                "请改用 read_event_excel + import_attendees 的手动流程。"
+            )
+
+        from tools.chinese_norm import clean_name
+        from tools.event_files import find_latest_file_by_type
+        from tools.excel_io import inspect_excel_structure
+
+        entry = find_latest_file_by_type(event_id, "excel")
+        if not entry:
+            return "本活动没有上传过 Excel 文件"
+
+        # Read raw rows (use openpyxl directly to keep all cells, no
+        # heuristic field detection).
+        from openpyxl import load_workbook
+        wb = load_workbook(entry["path"], read_only=True, data_only=True)
+        all_raw_rows: list[list[Any]] = []
+        for ws_sheet in wb.worksheets:
+            for row in ws_sheet.iter_rows(values_only=True):
+                cells = list(row or ())
+                while cells and cells[-1] is None:
+                    cells.pop()
+                if not cells:
+                    continue
+                all_raw_rows.append(cells)
+        wb.close()
+
+        if len(all_raw_rows) < 2:
+            return "Excel 行数不足（至少需要表头 + 1 行数据）"
+
+        structure = inspect_excel_structure(file_path=entry["path"])
+
+        llm = llm_factory("smart")
+        if llm is None:
+            return "❌ LLM 服务不可用。"
+
+        # Ask the LLM to emit a per-row JSON parse. We send the structure
+        # facts + ALL data rows in one shot; the LLM returns a list of
+        # {name, organization, title, role, priority} dicts.
+        system = (
+            "你是 Eventron 的花名册解析器。给你一份 Excel 的结构信息和"
+            "所有数据行，请逐行解析为标准化参会者记录。\n\n"
+            "规则：\n"
+            "1. 先看 header_row 和 sample_rows 弄清每一列的含义。\n"
+            "2. 如果某一列把'公司'+'职位'合并在一起（例如"
+            " '北方石油國際有限公司 總經理'），按你对中文公司命名习惯的"
+            "理解把它拆成 organization + title。'中信財務（國際）有限公司"
+            " 公司總經理' 应拆为 org='中信財務（國際）有限公司',"
+            " title='公司總經理'，不要被'公司總經理'里的'公司'误导。\n"
+            "3. role 是角色标签（贵宾/嘉宾/演讲嘉宾/工作人员/参会者）。"
+            "如果原数据没有明确角色，根据 title 判断：董事长/总裁/CEO 类"
+            "→'贵宾'；总经理/合伙人/总监 → '嘉宾'；其他 → 默认 role。\n"
+            "4. priority 0-100：董事长/总裁=90, 总经理=80, 副总=70,"
+            " 经理/主管=50, 其他=30。\n"
+            "5. 姓名清洗：去掉中间空格（'李 虎' → '李虎'）。\n"
+            "6. 看到序号列（纯数字）就忽略它，不是数据。\n"
+            "7. 严格输出 JSON 数组，不要任何 markdown 包裹、注释、前后语。\n"
+            '   每项格式: {"name":"...", "organization":"...", "title":"...",'
+            ' "role":"...", "priority": int}\n'
+            "8. 解析不出 name 的行直接跳过（不要伪造）。"
+        )
+        # Send a compact representation
+        payload = {
+            "default_role": default_role,
+            "column_hint": column_mapping_hint or None,
+            "structure": structure,
+            "rows": all_raw_rows,
+        }
+        try:
+            resp = await llm.ainvoke([
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": (
+                        "请解析以下 Excel 行：\n"
+                        + json.dumps(payload, ensure_ascii=False)
+                    ),
+                },
+            ])
+            raw = resp.content if hasattr(resp, "content") else str(resp)
+            if isinstance(raw, list):
+                raw = next(
+                    (p.get("text") for p in raw if isinstance(p, dict) and p.get("type") == "text"),
+                    "",
+                )
+        except Exception as exc:
+            return f"❌ LLM 解析失败：{exc}"
+
+        # Robust JSON extraction
+        parsed: list[dict] = []
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            # Try to find the first JSON array
+            import re as _re
+            m = _re.search(r"\[[\s\S]*\]", text)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    parsed = []
+        if not isinstance(parsed, list) or not parsed:
+            return (
+                "❌ LLM 没有返回有效 JSON，请把 Excel 用 read_event_excel "
+                "看完后改用 import_attendees 手动构造。"
+            )
+
+        # Persist
+        existing = await attendee_svc.list_attendees_for_event(eid)
+        existing_map = {a.name: a for a in existing}
+        created = updated = skipped = 0
+        seen: set[str] = set()
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = clean_name((item.get("name") or "").strip()) or ""
+            if not name:
+                skipped += 1
+                continue
+            org = (item.get("organization") or "").strip() or None
+            title = (item.get("title") or "").strip() or None
+            role = (item.get("role") or default_role).strip()
+            priority = item.get("priority")
+            try:
+                priority = int(priority) if priority is not None else None
+            except Exception:
+                priority = None
+
+            key = f"{name}|{org or ''}"
+            if key in seen:
+                skipped += 1
+                continue
+            seen.add(key)
+
+            fields: dict[str, Any] = {"role": role}
+            if org:
+                fields["organization"] = org
+            if title:
+                fields["title"] = title
+            if priority is not None:
+                fields["priority"] = priority
+
+            try:
+                if name in existing_map:
+                    await attendee_svc.update_attendee(
+                        existing_map[name].id, **fields,
+                    )
+                    updated += 1
+                else:
+                    await attendee_svc.create_attendee(
+                        eid, name=name, **fields,
+                    )
+                    created += 1
+            except Exception:
+                skipped += 1
+
+        return (
+            f"smart_import_roster 完成: 新增 {created}, 更新 {updated},"
+            f" 跳过 {skipped}, LLM 解析 {len(parsed)} 行"
+        )
+
+    @tool
+    async def suggest_venue_dims(
+        attendees_count: int,
+        layout_type: str = "theater",
+        user_hints: str = "",
+    ) -> str:
+        """让 LLM 给场地推荐 (rows, cols)，并解释理由。
+
+        不返回单一答案 — 返回 2-3 个候选 + 推荐理由，给你（agent）空间
+        和用户对话。如果用户告诉你具体场地形状/尺寸，请直接用，不要先调
+        本工具。
+
+        Args:
+            attendees_count: 实际参会人数（必须！别猜）
+            layout_type: theater|classroom|roundtable|banquet|u_shape|grid
+            user_hints: 用户给过的形状/尺寸暗示，原样转给 LLM。
+                例: '会场长 30 米宽 18 米' / '剧院式带通道'
+        """
+        if llm_factory is None:
+            return "❌ 没有 LLM 工厂；请直接和用户确认 rows/cols。"
+        if not attendees_count or attendees_count <= 0:
+            return "❌ 必须给出真实参会人数。"
+
+        llm = llm_factory("fast")
+        if llm is None:
+            return "❌ LLM 服务不可用。"
+
+        system = (
+            "你是会场布局顾问。给你人数+布局类型+用户暗示，给出 2-3 个"
+            "候选 rows×cols 方案。\n"
+            "约束：\n"
+            "- 总座位数 ≥ 人数，且不超过 1.5×人数（避免大量空座）\n"
+            "- 单维不超过 60，否则拆区域更合理\n"
+            "- 比例符合该 layout_type 习惯（theater 偏宽，u_shape 偏深）\n"
+            "- 如果用户给了具体尺寸，按尺寸精确算\n"
+            "严格输出 JSON: "
+            '{"options":[{"rows":int,"cols":int,"capacity":int,'
+            '"rationale":"为什么这样"}], "recommendation_index": int,'
+            '"questions_to_user":["可选追问"]}'
+        )
+        try:
+            resp = await llm.ainvoke([
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": json.dumps({
+                        "attendees": attendees_count,
+                        "layout_type": layout_type,
+                        "hints": user_hints or "",
+                    }, ensure_ascii=False),
+                },
+            ])
+            txt = resp.content if hasattr(resp, "content") else str(resp)
+            if isinstance(txt, list):
+                txt = next(
+                    (p.get("text") for p in txt if isinstance(p, dict) and p.get("type") == "text"),
+                    "",
+                )
+            return str(txt).strip()
+        except Exception as exc:
+            return f"❌ LLM 推荐失败：{exc}"
 
     @tool
     async def list_attendees_with_seats() -> str:
@@ -433,16 +784,14 @@ def make_seating_tools(
     # ── Structured seat-chart import ─────────────────────────
     @tool
     async def analyze_seat_chart() -> str:
-        """分析本活动上传的座位表 Excel，提取结构化信息。
+        """**仅当你已经用 inspect_excel 确认这是空间座位图时**才调本工具。
 
-        自动识别：
-        - 每个 sheet = 一个区域（观众席、贵宾区…）
-        - 单元格中的人名 = 参会者（保留位置信息）
-        - 行/列标题、舞台、通道等装饰元素自动过滤
-        - 角色从 sheet 名称推断（观众席→观众，贵宾区→贵宾）
-        - 繁简中文自动统一为简体
+        空间座位图 = 单元格按物理位置摆放人名、通常含"舞台/通道"装饰、
+        sheet 宽度 ≥6 列、不像普通的"姓名/公司/职位"列式表格。
 
-        返回结构化 JSON 摘要。后续可用 import_from_seat_chart 一键导入。
+        本工具只做 I/O 解析，不做分类。如果你把花名册（如3 列报名表）
+        丢给本工具，会返回 0 个区域 — 那是你的判断错误，请回到
+        inspect_excel 看清结构后改用 smart_import_roster。
         """
         from tools.event_files import find_latest_file_by_type
         from tools.excel_io import parse_seat_layout_structured
@@ -452,6 +801,14 @@ def make_seating_tools(
             return "本活动没有上传过 Excel 文件"
 
         result = parse_seat_layout_structured(file_path=entry["path"])
+
+        if not result.get("areas"):
+            return (
+                "未识别出任何空间座位区域（areas=0）。常见原因：\n"
+                "  · 这其实是花名册而不是座位图 → 改用 smart_import_roster\n"
+                "  · sheet 行/列结构不规则 → 用 read_event_excel 先看原文"
+            )
+
         parts = [f"📊 座位表分析结果 (文件: {entry.get('filename', 'Excel')})"]
         parts.append(
             f"总计 {result['total_attendees']} 位参会者, "
@@ -513,7 +870,12 @@ def make_seating_tools(
 
         result = parse_seat_layout_structured(file_path=entry["path"])
         if not result["areas"]:
-            return "未能从 Excel 中识别出座位区域"
+            return (
+                "未识别出任何空间座位区域。如果这是花名册，请改用 "
+                "smart_import_roster。如果你确认是座位图但格式不规则，"
+                "用 read_event_excel 看原文后手动 create_area + "
+                "import_attendees。"
+            )
 
         skip_set = {
             s.strip()
@@ -580,13 +942,24 @@ def make_seating_tools(
         total_created = 0
         total_updated = 0
 
-        # Delete existing areas to start fresh
+        # Delete existing areas + their seats to start fresh
         existing_areas = await seat_svc.list_areas(eid)
         for ea in existing_areas:
             await seat_svc.delete_area(ea.id)
         if existing_areas:
             report.append(
                 f"  已清除 {len(existing_areas)} 个旧区域"
+            )
+
+        # Also clear orphan seats (area_id=None) left by earlier
+        # create_layout calls — otherwise the canvas piles up multiple
+        # overlapping layouts.
+        all_seats = await seat_svc.get_seats(eid)
+        orphans = [s for s in all_seats if s.area_id is None]
+        if orphans:
+            await seat_svc.clear_all_seats(eid)
+            report.append(
+                f"  已清理 {len(orphans)} 个未归区的旧座位"
             )
 
         y_cursor = 0.0
@@ -791,6 +1164,9 @@ def make_seating_tools(
         set_zone,
         set_zone_unzoned,
         read_event_excel,
+        inspect_excel,
+        smart_import_roster,
+        suggest_venue_dims,
         analyze_seat_chart,
         import_from_seat_chart,
         list_attendees,

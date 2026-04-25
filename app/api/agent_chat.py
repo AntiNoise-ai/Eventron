@@ -233,7 +233,9 @@ async def _save_upload(
     """Save uploaded file and return attachment metadata.
 
     If event_id is provided, persists to the event's file store
-    (uploads/events/{event_id}/). Otherwise falls back to temp dir.
+    (uploads/events/{event_id}/). Otherwise stores in temp dir and
+    keeps enough metadata so the file can be migrated later when an
+    event_id materialises mid-conversation.
     """
     from tools.file_extract import detect_file_type
 
@@ -241,62 +243,124 @@ async def _save_upload(
     file_type = detect_file_type(file.filename or "")
 
     if event_id:
-        # Persist to event file store
-        from tools.event_files import event_dir as _event_dir, load_manifest as _load_manifest, save_manifest as _save_manifest
+        return _persist_to_event_store(
+            event_id, file.filename, content,
+            file_type, file.content_type,
+        )
 
-        eid = uuid.UUID(event_id)
-        ext = Path(file.filename or "file").suffix.lower()
-        file_id = uuid.uuid4().hex[:12]
-        safe_name = f"{file_id}{ext}"
-        dest = _event_dir(eid) / safe_name
-        dest.write_bytes(content)
-
-        # Update manifest — replace duplicate original filenames
-        from datetime import datetime
-        manifest = _load_manifest(eid)
-
-        # Remove old entries with the same original filename (avoid duplicates)
-        old_entries = [
-            e for e in manifest
-            if e.get("filename") == file.filename
-        ]
-        for old in old_entries:
-            old_path = _event_dir(eid) / old["stored_name"]
-            if old_path.exists():
-                old_path.unlink()
-        manifest = [
-            e for e in manifest
-            if e.get("filename") != file.filename
-        ]
-
-        entry = {
-            "id": file_id,
-            "filename": file.filename,
-            "stored_name": safe_name,
-            "type": file_type,
-            "content_type": file.content_type,
-            "size": len(content),
-            "uploaded_at": datetime.utcnow().isoformat(),
-            "source": "agent_chat",
-        }
-        manifest.append(entry)
-        _save_manifest(eid, manifest)
-        filepath = str(dest)
-    else:
-        # Fallback: temp dir (no event context)
-        ext = Path(file.filename or "file").suffix
-        uid = uuid.uuid4().hex[:8]
-        filename = f"{uid}{ext}"
-        filepath = str(UPLOAD_DIR / filename)
-        Path(filepath).write_bytes(content)
-
+    # Fallback: temp dir (no event context yet)
+    ext = Path(file.filename or "file").suffix
+    uid = uuid.uuid4().hex[:8]
+    filename = f"{uid}{ext}"
+    filepath = str(UPLOAD_DIR / filename)
+    Path(filepath).write_bytes(content)
     return {
         "filename": file.filename,
         "path": filepath,
         "type": file_type,
         "content_type": file.content_type,
         "size": len(content),
+        "pending_migration": True,
     }
+
+
+def _persist_to_event_store(
+    event_id: str,
+    filename: str | None,
+    content: bytes,
+    file_type: str,
+    content_type: str | None,
+) -> dict[str, Any]:
+    """Write bytes into uploads/events/{event_id}/ and update the manifest."""
+    from datetime import datetime
+    from tools.event_files import (
+        event_dir as _event_dir,
+        load_manifest as _load_manifest,
+        save_manifest as _save_manifest,
+    )
+
+    eid = uuid.UUID(event_id)
+    ext = Path(filename or "file").suffix.lower()
+    file_id = uuid.uuid4().hex[:12]
+    safe_name = f"{file_id}{ext}"
+    dest = _event_dir(eid) / safe_name
+    dest.write_bytes(content)
+
+    manifest = _load_manifest(eid)
+    # Remove duplicates with the same original filename
+    for old in [e for e in manifest if e.get("filename") == filename]:
+        old_path = _event_dir(eid) / old["stored_name"]
+        if old_path.exists():
+            old_path.unlink()
+    manifest = [e for e in manifest if e.get("filename") != filename]
+
+    manifest.append({
+        "id": file_id,
+        "filename": filename,
+        "stored_name": safe_name,
+        "type": file_type,
+        "content_type": content_type,
+        "size": len(content),
+        "uploaded_at": datetime.utcnow().isoformat(),
+        "source": "agent_chat",
+    })
+    _save_manifest(eid, manifest)
+
+    return {
+        "filename": filename,
+        "path": str(dest),
+        "type": file_type,
+        "content_type": content_type,
+        "size": len(content),
+        "pending_migration": False,
+    }
+
+
+def _migrate_pending_attachments(
+    session: dict[str, Any],
+    new_event_id: str,
+) -> None:
+    """Move any pre-event temp uploads into the event's file store.
+
+    Called once an event_id appears in the session (typically right
+    after the planner→organizer chain creates the activity).
+    """
+    pending: list[dict[str, Any]] = []
+    if session.get("attachments"):
+        pending.extend(session["attachments"])
+    pending.extend(session.get("pending_uploads") or [])
+
+    if not pending:
+        return
+
+    migrated: list[dict[str, Any]] = []
+    for att in pending:
+        if not att.get("pending_migration"):
+            continue
+        path = Path(att.get("path") or "")
+        if not path.exists():
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        new_meta = _persist_to_event_store(
+            new_event_id,
+            att.get("filename"),
+            content,
+            att.get("type") or "unknown",
+            att.get("content_type"),
+        )
+        migrated.append(new_meta)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+    if migrated and session.get("attachments"):
+        # Replace temp paths with persisted ones for the next turn
+        session["attachments"] = migrated
+    session["pending_uploads"] = []
 
 
 # ── Text-only endpoint (backward compatible) ──────────────────
@@ -347,6 +411,11 @@ async def agent_chat(
     # Build user message content (multimodal when images present)
     if new_attachments:
         session["attachments"] = new_attachments
+        # Track temp uploads so they can be migrated once an event is created
+        if any(a.get("pending_migration") for a in new_attachments):
+            session.setdefault("pending_uploads", []).extend(
+                [a for a in new_attachments if a.get("pending_migration")]
+            )
         user_msg = _build_multimodal_message(msg, new_attachments)
     else:
         user_msg = HumanMessage(content=msg)
@@ -406,7 +475,11 @@ async def agent_chat(
 
     # Update session state
     if result.get("event_id"):
+        prev_event_id = session.get("event_id")
         session["event_id"] = result["event_id"]
+        # If event_id just appeared, migrate any pre-event temp files
+        if prev_event_id != result["event_id"]:
+            _migrate_pending_attachments(session, result["event_id"])
     if result.get("user_profile"):
         session["user_profile"] = result["user_profile"]
     if result.get("task_plan"):
@@ -414,7 +487,9 @@ async def agent_chat(
     if result.get("event_draft"):
         session["event_draft"] = result["event_draft"]
 
-    # Clear attachments after processing (but keep event_draft)
+    # Clear attachments after processing (but keep event_draft).
+    # Files have been persisted to either the event store (if event_id was
+    # known at upload time) or migrated above (if event_id appeared mid-flow).
     if new_attachments:
         session["attachments"] = []
 
@@ -525,6 +600,10 @@ async def agent_chat_stream(
 
     if new_attachments:
         session["attachments"] = new_attachments
+        if any(a.get("pending_migration") for a in new_attachments):
+            session.setdefault("pending_uploads", []).extend(
+                [a for a in new_attachments if a.get("pending_migration")]
+            )
         user_msg = _build_multimodal_message(msg, new_attachments)
     else:
         user_msg = HumanMessage(content=msg)
@@ -592,7 +671,10 @@ async def agent_chat_stream(
 
             # Update session
             if result.get("event_id"):
+                prev_eid = session.get("event_id")
                 session["event_id"] = result["event_id"]
+                if prev_eid != result["event_id"]:
+                    _migrate_pending_attachments(session, result["event_id"])
             if result.get("user_profile"):
                 session["user_profile"] = result["user_profile"]
             if result.get("task_plan"):

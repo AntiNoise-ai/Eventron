@@ -41,10 +41,21 @@ def build_vision_prompt(filename: str) -> str:
     """
     return """你是一个专业的活动信息提取器。请仔细分析这张图片，提取所有活动相关信息。
 
+⚠️ 关键阅读顺序（按优先级）：
+  1. **先看图片上的所有可见文字** —— 标题、副标题、日期、地点、
+     时间、主办方 logo / 名称。海报/邀请函/横幅几乎一定会写日期。
+  2. 不要跳过中文/繁体/英文/数字混排的小字角标——常常是日期。
+  3. 日期格式可能是 "2026年4月27日" / "2026.4.27" / "April 27, 2026" /
+     "4/27"。请统一转换为 "YYYY-MM-DD"，年份缺失时按今年补全。
+  4. 提取后必须自检："如果用户问日期，我能从图片里指出对应位置吗？"
+     答不上来才允许 event_date = null。
+  5. 图片整体风格、配色、字体也要记录到 badge_info.style，
+     方便下游沿用同样视觉语言。
+
 请提取以下字段（JSON格式），找不到的字段用 null：
 ```json
 {
-  "event_name": "活动名称",
+  "event_name": "活动名称（含主标题+副标题，繁简保留原文）",
   "event_date": "YYYY-MM-DD",
   "event_time": "HH:MM-HH:MM",
   "location": "活动地点",
@@ -61,6 +72,9 @@ def build_vision_prompt(filename: str) -> str:
     "style": "formal|casual|tech|government",
     "needs_photo": true/false,
     "bilingual": true/false
+  },
+  "evidence": {
+    "date_source": "你从图片哪个位置读到了日期，原样引用；找不到写null"
   }
 }
 ```

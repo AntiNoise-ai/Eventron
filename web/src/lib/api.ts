@@ -484,9 +484,14 @@ export class ApiClient {
       method: 'POST', headers, body: formData,
     });
     if (response.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
-      throw new Error('Unauthorized');
+      // Only redirect on confirmed auth failures (no token / token rejected
+      // twice). A single 401 mid-upload is often a transient race between
+      // token-load and request firing — surface a friendlier error and
+      // let the caller decide.
+      if (!token) {
+        window.location.href = '/login';
+      }
+      throw new Error('登录已失效，请刷新页面后重试');
     }
     if (!response.ok) {
       const err = (await response.json()) as ApiError;
@@ -527,9 +532,10 @@ export class ApiClient {
     });
 
     if (response.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
-      throw new Error('Unauthorized');
+      if (!token) {
+        window.location.href = '/login';
+      }
+      throw new Error('登录已失效，请刷新页面后重试');
     }
     if (!response.ok) {
       throw new Error('Stream error');

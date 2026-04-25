@@ -122,6 +122,10 @@ class SeatingService:
         """Get all seats for an event."""
         return await self._seat_repo.get_by_event(event_id)
 
+    async def clear_all_seats(self, event_id: uuid.UUID) -> int:
+        """Delete every seat for an event (used before bulk regenerate)."""
+        return await self._seat_repo.delete_by_event(event_id)
+
     async def get_available_seats(self, event_id: uuid.UUID) -> list[Seat]:
         """Get unoccupied, non-disabled seats."""
         return await self._seat_repo.get_available_seats(event_id)

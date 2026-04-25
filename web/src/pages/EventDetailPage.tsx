@@ -42,6 +42,19 @@ export function EventDetailPage() {
     enabled: !!id,
   }) as any;
 
+  // Real seat count from DB so the title bar never lies about the layout.
+  // event.venue_rows × venue_cols can drift from reality once areas are
+  // created/regenerated; the seat list is the single source of truth.
+  const { data: seatList = [] } = useQuery({
+    queryKey: ['seats', id],
+    queryFn: async () => {
+      const res = await apiClient.getSeats(id!);
+      return ((res as any).data || res) as Array<{ id: string }>;
+    },
+    enabled: !!id,
+  });
+  const realSeatCount: number = (seatList as Array<{ id: string }>).length;
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -96,7 +109,7 @@ export function EventDetailPage() {
             {(event as any).event_date && new Date((event as any).event_date).toLocaleDateString('zh-CN')}
             {(event as any).location && ` · ${(event as any).location}`}
             {(event as any).layout_type && ` · ${(event as any).layout_type}`}
-            {(event as any).venue_rows > 0 && ` · ${(event as any).venue_rows}×${(event as any).venue_cols}座`}
+            {realSeatCount > 0 && ` · ${realSeatCount} 座`}
           </p>
         </div>
       </div>
