@@ -93,6 +93,9 @@ export function SubAgentPanel({
   }, [messages, sessionId, STORAGE_KEY]);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  // Track in-flight file additions so we can show a loading state
+  // when fetching a large existing file blob from the server.
+  const [loadingFileIds, setLoadingFileIds] = useState<Set<string>>(new Set());
   const dragCounterRef = useRef(0);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingTools, setStreamingTools] = useState<StreamingToolCall[]>([]);
@@ -123,9 +126,12 @@ export function SubAgentPanel({
     return () => document.removeEventListener('mousedown', handler);
   }, [showFilePicker]);
 
-  // Add an existing event file to pending (fetches as blob)
+  // Add an existing event file to pending (fetches as blob).
+  // Large files can take seconds — track loading state so the UI
+  // shows a spinner instead of looking frozen.
   const addExistingFile = async (entry: EventFileEntry) => {
-    setShowFilePicker(false);
+    if (loadingFileIds.has(entry.id)) return;
+    setLoadingFileIds((s) => new Set(s).add(entry.id));
     try {
       const url = apiClient.getEventFileUrl(eventId, entry.id);
       const resp = await fetch(url, {
@@ -139,8 +145,15 @@ export function SubAgentPanel({
         type: entry.content_type,
       });
       setPendingFiles((p) => [...p, file]);
+      setShowFilePicker(false);
     } catch {
       // silently ignore fetch errors
+    } finally {
+      setLoadingFileIds((s) => {
+        const next = new Set(s);
+        next.delete(entry.id);
+        return next;
+      });
     }
   };
 
@@ -148,12 +161,12 @@ export function SubAgentPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingTools]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea (capped — beyond cap, internal scroll kicks in)
   const adjustHeight = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta || ta.offsetHeight === 0) return;
     ta.style.height = 'auto';
-    ta.style.height = ta.scrollHeight + 'px';
+    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
   }, []);
 
   useEffect(() => { adjustHeight(); }, [input, adjustHeight]);
@@ -254,6 +267,18 @@ export function SubAgentPanel({
                 status: 'running',
               },
             ]);
+            break;
+
+          case 'tool_progress':
+            // Long-running tools (e.g. page generation) push intermediate
+            // status here so the user sees real activity.
+            setStreamingTools((prev) =>
+              prev.map((t) =>
+                t.tool_name === evt.tool_name && t.status === 'running'
+                  ? { ...t, summary: evt.summary }
+                  : t
+              )
+            );
             break;
 
           case 'tool_end':
@@ -424,8 +449,8 @@ export function SubAgentPanel({
                 <span className="text-[10px] text-gray-600 truncate">
                   {tc.tool_name_zh}
                 </span>
-                {tc.status === 'success' && tc.summary && (
-                  <span className="text-[9px] text-gray-400 truncate ml-auto max-w-[120px]">
+                {tc.summary && (
+                  <span className="text-[9px] text-gray-400 truncate ml-auto max-w-[140px]">
                     {tc.summary}
                   </span>
                 )}
@@ -475,11 +500,30 @@ export function SubAgentPanel({
       {/* Input — textarea for Shift+Enter */}
       <div className="border-t border-gray-200 p-2">
         <div className="flex gap-1.5 items-end">
-          <input ref={fileInputRef} type="file" multiple accept="image/*,.xlsx,.xls,.csv,.pdf" onChange={(e) => {
-            setPendingFiles((p) => [...p, ...Array.from(e.target.files || [])]);
-            e.target.value = '';
-            setShowFilePicker(false);
-          }} className="hidden" />
+          {/* Visually hidden (not display:none) — programmatic click() is
+              more reliable when the element is in the layout tree. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,.xlsx,.xls,.csv,.pdf"
+            onChange={(e) => {
+              const picked = Array.from(e.target.files || []);
+              if (picked.length > 0) {
+                setPendingFiles((p) => [...p, ...picked]);
+              }
+              e.target.value = '';
+              setShowFilePicker(false);
+            }}
+            style={{
+              position: 'absolute',
+              width: 1, height: 1,
+              opacity: 0, pointerEvents: 'none',
+              overflow: 'hidden',
+            }}
+            tabIndex={-1}
+            aria-hidden="true"
+          />
           <div className="relative" ref={filePickerRef}>
             <button
               onClick={() => setShowFilePicker((v) => !v)}
@@ -504,27 +548,35 @@ export function SubAgentPanel({
                     <div className="px-3 py-1.5 text-[10px] text-gray-400 font-semibold uppercase tracking-wider bg-gray-50">
                       已上传文件
                     </div>
-                    {(eventFiles as EventFileEntry[]).map((f) => (
-                      <button
-                        key={f.id}
-                        onClick={() => addExistingFile(f)}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 transition-colors"
-                      >
-                        {f.type === 'image' ? (
-                          <FileImage size={12} className="text-blue-400 flex-shrink-0" />
-                        ) : (
-                          <FileText size={12} className="text-gray-400 flex-shrink-0" />
-                        )}
-                        <span className="truncate flex-1 text-left">
-                          {f.filename}
-                        </span>
-                        <span className="text-[9px] text-gray-400 flex-shrink-0">
-                          {f.size > 1024 * 1024
-                            ? `${(f.size / 1024 / 1024).toFixed(1)}M`
-                            : `${Math.round(f.size / 1024)}K`}
-                        </span>
-                      </button>
-                    ))}
+                    {(eventFiles as EventFileEntry[]).map((f) => {
+                      const isLoading = loadingFileIds.has(f.id);
+                      return (
+                        <button
+                          key={f.id}
+                          onClick={() => addExistingFile(f)}
+                          disabled={isLoading}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-wait"
+                        >
+                          {isLoading ? (
+                            <Loader2 size={12} className="text-indigo-500 flex-shrink-0 animate-spin" />
+                          ) : f.type === 'image' ? (
+                            <FileImage size={12} className="text-blue-400 flex-shrink-0" />
+                          ) : (
+                            <FileText size={12} className="text-gray-400 flex-shrink-0" />
+                          )}
+                          <span className="truncate flex-1 text-left">
+                            {f.filename}
+                          </span>
+                          <span className="text-[9px] text-gray-400 flex-shrink-0">
+                            {isLoading
+                              ? '加载中…'
+                              : f.size > 1024 * 1024
+                              ? `${(f.size / 1024 / 1024).toFixed(1)}M`
+                              : `${Math.round(f.size / 1024)}K`}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="px-3 py-2 text-[10px] text-gray-400 text-center">
@@ -557,7 +609,7 @@ export function SubAgentPanel({
             placeholder={placeholder}
             disabled={isStreaming}
             rows={1}
-            className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 resize-none overflow-hidden"
+            className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 resize-none overflow-y-auto"
           />
           <button onClick={handleSend} disabled={(!input.trim() && !pendingFiles.length) || isStreaming}
             className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50">

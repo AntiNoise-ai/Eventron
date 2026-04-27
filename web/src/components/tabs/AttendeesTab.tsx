@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, Check, Download } from 'lucide-react';
+import { Plus, Trash2, Check, Download, RefreshCw } from 'lucide-react';
 import { apiClient } from '../../lib/api';
 import { AddAttendeeModal } from '../AddAttendeeModal';
 
@@ -30,7 +30,7 @@ export function AttendeesTab({ eventId }: AttendeesTabProps) {
   const [statusFilter, setStatusFilter] = useState('');
   const queryClient = useQueryClient();
 
-  const { data: attendees = [], isLoading } = useQuery({
+  const { data: attendees = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ['attendees', eventId, roleFilter, statusFilter],
     queryFn: async () => {
       const params: Record<string, string> = {};
@@ -39,6 +39,11 @@ export function AttendeesTab({ eventId }: AttendeesTabProps) {
       const result = await apiClient.getAttendees(eventId, params);
       return (result as any).data || result;
     },
+    // Attendee status changes from external H5 checkin — keep this list
+    // live rather than relying on the global 5min staleTime.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15_000,
   });
 
   const checkinMutation = useMutation({
@@ -102,6 +107,19 @@ export function AttendeesTab({ eventId }: AttendeesTabProps) {
         </div>
 
         <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              refetch();
+              queryClient.invalidateQueries({ queryKey: ['dashboard', eventId] });
+            }}
+            disabled={isFetching}
+            className="flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium whitespace-nowrap disabled:opacity-50"
+            title="刷新签到状态"
+          >
+            <RefreshCw size={16} className={isFetching ? 'animate-spin' : ''} />
+            刷新
+          </button>
           <a
             href={apiClient.getExportAttendeesUrl(eventId)}
             className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium whitespace-nowrap"

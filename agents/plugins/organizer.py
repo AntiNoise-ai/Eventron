@@ -304,18 +304,10 @@ class OrganizerPlugin(AgentPlugin):
         rows = event_draft.get("estimated_rows") or event_draft.get("venue_rows")
         cols = event_draft.get("estimated_cols") or event_draft.get("venue_cols")
 
-        # If the agent forgot to populate them, refuse rather than guess —
-        # ask the LLM to come back with a real plan.
+        # If rows/cols are missing, fall back to LLM conversation so it can
+        # ask for just the missing fields rather than returning a hard error.
         if not rows or not cols:
-            reply = (
-                "❌ 无法创建活动：缺少 venue_rows / venue_cols。"
-                " 请告诉我场地形状（剧院式/课桌式…）和预计人数，"
-                "我来帮你确认尺寸。"
-            )
-            return {
-                "messages": [AIMessage(content=reply)],
-                "turn_output": reply,
-            }
+            return await self.handle({**state, "task_plan": [], "event_draft": event_draft})
         rows = int(rows)
         cols = int(cols)
 

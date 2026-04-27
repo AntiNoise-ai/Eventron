@@ -137,7 +137,7 @@ export function AssistantPage() {
     const ta = textareaRef.current;
     if (!ta || ta.offsetHeight === 0) return;
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
   }, []);
 
   useEffect(() => { adjustTextareaHeight(); }, [input, adjustTextareaHeight]);
@@ -386,10 +386,20 @@ export function AssistantPage() {
             multiple
             accept="image/*,.xlsx,.xls,.csv,.pdf"
             onChange={(e) => {
-              setPendingFiles((prev) => [...prev, ...Array.from(e.target.files || [])]);
+              const picked = Array.from(e.target.files || []);
+              if (picked.length > 0) {
+                setPendingFiles((prev) => [...prev, ...picked]);
+              }
               e.target.value = '';
             }}
-            className="hidden"
+            style={{
+              position: 'absolute',
+              width: 1, height: 1,
+              opacity: 0, pointerEvents: 'none',
+              overflow: 'hidden',
+            }}
+            tabIndex={-1}
+            aria-hidden="true"
           />
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -423,7 +433,8 @@ export function AssistantPage() {
               placeholder="描述你的需求，或上传活动海报/名单...（Shift+Enter 换行）"
               disabled={chatMutation.isPending}
               rows={1}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:opacity-50 resize-none overflow-hidden"
+              style={{ maxHeight: '200px' }}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:opacity-50 resize-none overflow-y-auto"
             />
           </div>
           <button

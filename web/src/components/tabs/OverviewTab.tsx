@@ -25,6 +25,11 @@ export function OverviewTab({ eventId }: OverviewTabProps) {
   const { data: stats, isLoading } = useQuery({
     queryKey: ['dashboard', eventId],
     queryFn: () => apiClient.getDashboard(eventId) as Promise<DashboardStats>,
+    // Stats reflect real-world checkins from a separate H5 page —
+    // refresh on focus and poll lightly so the dashboard isn't stale.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15_000,
   });
 
   if (isLoading) {

@@ -361,32 +361,154 @@ def make_checkin_tools(
         else:
             gen_msg = HM(content=gen_text)
 
-        # 3. Call LLM to generate complete HTML page
+        # 3. Stream the LLM generation.
+        #
+        # Why streaming + inactivity timeout instead of a fixed wallclock
+        # cap: a 16K-token Opus generation can legitimately take 60–300s.
+        # A wallclock timeout either kills valid work or has to be huge.
+        # Inactivity timeout only fires when the model genuinely hangs
+        # (no token for N seconds), so the budget scales with the task.
+        #
+        # We also push periodic progress events to PROGRESS_QUEUE so the
+        # SSE endpoint can surface real activity to the user instead of
+        # an opaque "thinking..." state. Reuses agents/react.py infra.
         import asyncio
+        import time
+
+        from agents.react import PROGRESS_QUEUE
+
+        INACTIVITY_TIMEOUT = 60.0   # no token for 60s → assume hung
+        PROGRESS_BYTE_STEP = 1024   # push event every ~1KB of output
+        HARD_CAP_SECONDS = 600.0    # absolute upper bound (10 min) — sanity
+
+        queue = PROGRESS_QUEUE.get(None)
+
+        async def _push_progress(summary: str) -> None:
+            if queue is not None:
+                try:
+                    await queue.put({
+                        "event": "tool_progress",
+                        "tool_name": "deploy_custom_checkin_page",
+                        "tool_name_zh": "部署自定义签到页",
+                        "summary": summary,
+                    })
+                except Exception:
+                    pass  # progress is best-effort
+
+        chunks: list[str] = []
+        last_token_at = time.monotonic()
+        started_at = last_token_at
+        last_pushed_size = 0
+
+        async def _consume_stream() -> None:
+            """Drain llm.astream() into chunks, updating activity timestamp."""
+            nonlocal last_token_at, last_pushed_size
+            async for chunk in llm.astream([gen_msg]):
+                # LangChain chunks expose .content; may be str or list[dict]
+                piece = getattr(chunk, "content", "")
+                if isinstance(piece, list):
+                    from agents.llm_utils import extract_text_content
+                    piece = extract_text_content(piece)
+                if not piece:
+                    continue
+                chunks.append(piece)
+                last_token_at = time.monotonic()
+                total = sum(len(c) for c in chunks)
+                if total - last_pushed_size >= PROGRESS_BYTE_STEP:
+                    last_pushed_size = total
+                    await _push_progress(f"已生成 {total // 1024}KB…")
+
+        async def _watchdog() -> None:
+            """Abort if the stream stalls for too long with no new tokens."""
+            while True:
+                await asyncio.sleep(2.0)
+                idle = time.monotonic() - last_token_at
+                if idle > INACTIVITY_TIMEOUT:
+                    raise asyncio.TimeoutError(
+                        f"stream stalled: no token for {idle:.0f}s"
+                    )
+                if time.monotonic() - started_at > HARD_CAP_SECONDS:
+                    raise asyncio.TimeoutError(
+                        f"hard cap exceeded: {HARD_CAP_SECONDS}s"
+                    )
+
+        await _push_progress("正在调用模型生成页面…")
+
+        stream_task = asyncio.create_task(_consume_stream())
+        watch_task = asyncio.create_task(_watchdog())
+        stream_error: Exception | None = None
         try:
-            gen_response = await asyncio.wait_for(
-                llm.ainvoke([gen_msg]),
-                timeout=90.0,
+            done, pending = await asyncio.wait(
+                {stream_task, watch_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except asyncio.TimeoutError:
+            for t in pending:
+                t.cancel()
+            for t in done:
+                exc = t.exception()
+                if exc is not None:
+                    stream_error = exc
+                    break
+        except Exception as e:
+            stream_error = e
+        finally:
+            for t in (stream_task, watch_task):
+                if not t.done():
+                    t.cancel()
+
+        response_text = "".join(chunks)
+        elapsed = time.monotonic() - started_at
+
+        # If streaming failed but we got substantial output, try to salvage
+        # it. Otherwise return a structured error so the ReAct LLM can
+        # reason about whether to retry, simplify, or fall back.
+        if stream_error is not None and "<body" not in response_text.lower():
+            err_class = type(stream_error).__name__
+            if isinstance(stream_error, asyncio.TimeoutError):
+                return json.dumps({
+                    "status": "error",
+                    "reason": "stream_stalled",
+                    "elapsed_seconds": round(elapsed, 1),
+                    "received_bytes": len(response_text),
+                    "message": (
+                        f"生成模型在 {elapsed:.0f}s 内停止响应。"
+                        " 建议简化设计描述，或改用 patch_page_css "
+                        "对现有页面做局部修改。"
+                    ),
+                }, ensure_ascii=False)
             return json.dumps({
                 "status": "error",
-                "message": "页面生成超时，请简化设计要求后重试",
+                "reason": "llm_call_failed",
+                "error_class": err_class,
+                "elapsed_seconds": round(elapsed, 1),
+                "received_bytes": len(response_text),
+                "message": (
+                    f"调用生成模型失败：{err_class}: {stream_error}。"
+                    " 请稍后重试，或换一种描述方式。"
+                ),
             }, ensure_ascii=False)
 
-        response_text = gen_response.content or ""
-        if isinstance(response_text, list):
-            from agents.llm_utils import extract_text_content
-            response_text = extract_text_content(response_text)
-
-        # 4. Extract complete HTML page from response
-        html = _extract_full_page(response_text)
+        try:
+            html = _extract_full_page(response_text)
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "reason": "parse_failed",
+                "error_class": type(e).__name__,
+                "message": f"解析生成结果失败：{type(e).__name__}: {e}",
+            }, ensure_ascii=False)
 
         if not html or "<body" not in html.lower():
             return json.dumps({
                 "status": "error",
-                "message": "生成的页面内容为空，请重试",
+                "reason": "empty_or_invalid_html",
+                "message": (
+                    "生成的内容不是完整 HTML（缺少 <body>）。"
+                    "可能是模型只返回了片段，请重试或在描述中明确"
+                    "\"输出完整 HTML 文件\"。"
+                ),
                 "raw_length": len(response_text),
+                "raw_preview": response_text[:200],
             }, ensure_ascii=False)
 
         # 5. Inject EVENT_ID + checkin JS before </body>

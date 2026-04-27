@@ -62,7 +62,8 @@ def _build_system_prompt(
         )
     delegate_desc = "\n".join(delegate_lines) if delegate_lines else "（无可用代理）"
 
-    # Context hints
+    # Context hints — surface state facts so the LLM can reason about routing
+    # rather than guessing from user keywords.
     context_parts: list[str] = []
     if state.get("user_profile"):
         name = state["user_profile"].get("name", "")
@@ -70,10 +71,37 @@ def _build_system_prompt(
             context_parts.append(f"当前用户: {name}")
     if state.get("event_id"):
         context_parts.append(f"当前活动ID: {state['event_id']}")
+    else:
+        context_parts.append("当前活动ID: 无（尚未创建/选择活动）")
     attachments = state.get("attachments") or []
     if attachments:
         fnames = [a.get("filename", "file") for a in attachments]
         context_parts.append(f"用户上传了文件: {', '.join(fnames)}")
+
+    # Surface the planner's outputs so the orchestrator can see pending work
+    # without us hardcoding "if pending organizer → call organizer". The LLM
+    # decides — we just give it the facts.
+    event_draft = state.get("event_draft")
+    if event_draft:
+        import json as _json
+        context_parts.append(
+            f"已有活动草稿（来自 planner 分析）: "
+            f"{_json.dumps(event_draft, ensure_ascii=False)}"
+        )
+    task_plan = state.get("task_plan") or []
+    if task_plan:
+        plan_lines = []
+        for t in task_plan:
+            tid = t.get("id", "?")
+            plugin = t.get("plugin", "?")
+            desc = t.get("description", "")
+            status = t.get("status", "pending")
+            plan_lines.append(f"  · [{status}] {plugin} ({tid}): {desc}")
+        context_parts.append(
+            "待执行任务计划（planner 已拆解）:\n" + "\n".join(plan_lines)
+            + "\n→ 用户后续消息通常在补全这些任务所需的信息或要求执行下一步，"
+            "请把请求转交给对应 plugin 的 delegate_to_xxx 工具。"
+        )
 
     context_str = "\n".join(context_parts) if context_parts else "无特殊上下文"
 
